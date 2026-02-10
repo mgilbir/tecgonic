@@ -55,6 +55,7 @@ type compileConfig struct {
 	bundleDir string
 	fontsDir  string
 	stderr    io.Writer
+	output    io.Writer
 }
 
 // CompileOption configures a single Compile() call.
@@ -78,5 +79,13 @@ func WithFontsDir(dir string) CompileOption {
 func WithStderr(w io.Writer) CompileOption {
 	return func(c *compileConfig) {
 		c.stderr = w
+	}
+}
+
+// WithOutput streams the compiled PDF to the given writer instead of returning
+// it as a byte slice. When set, Compile returns (nil, nil) on success.
+func WithOutput(w io.Writer) CompileOption {
+	return func(c *compileConfig) {
+		c.output = w
 	}
 }

@@ -297,6 +297,19 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 
 	// Read the output PDF
 	pdfPath := filepath.Join(outputDir, "input.pdf")
+
+	if cfg.output != nil {
+		f, err := os.Open(pdfPath)
+		if err != nil {
+			return nil, fmt.Errorf("tecgonic: opening output PDF: %w (tectonic output: %s)", err, stderrBuf.String())
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := io.Copy(cfg.output, f); err != nil {
+			return nil, fmt.Errorf("tecgonic: writing PDF to output: %w", err)
+		}
+		return nil, nil
+	}
+
 	pdfBytes, err := os.ReadFile(pdfPath)
 	if err != nil {
 		return nil, fmt.Errorf("tecgonic: reading output PDF: %w (tectonic output: %s)", err, stderrBuf.String())
