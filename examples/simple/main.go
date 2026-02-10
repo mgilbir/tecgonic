@@ -3,7 +3,7 @@
 //
 // Usage:
 //
-//	go run . [-o output.pdf] [-bundle-dir ~/.cache/tecgonic/bundle]
+//	go run . [-o output.pdf] [-bundle-dir ~/.cache/tecgonic/bundle] [-wasm-cache-dir ~/.cache/tecgonic/wasm-cache]
 package main
 
 import (
@@ -23,12 +23,15 @@ Hello, World!
 
 func main() {
 	defaultBundleDir := ""
-	if cacheDir, err := os.UserCacheDir(); err == nil {
-		defaultBundleDir = cacheDir + "/tecgonic/bundle"
+	defaultCacheDir := ""
+	if userCacheDir, err := os.UserCacheDir(); err == nil {
+		defaultBundleDir = userCacheDir + "/tecgonic/bundle"
+		defaultCacheDir = userCacheDir + "/tecgonic/wasm-cache"
 	}
 
 	output := flag.String("o", "output.pdf", "output PDF path")
 	bundleDir := flag.String("bundle-dir", defaultBundleDir, "path to TeX bundle directory")
+	wasmCacheDir := flag.String("wasm-cache-dir", defaultCacheDir, "path to WASM compilation cache directory (speeds up startup)")
 	flag.Parse()
 
 	if *bundleDir == "" {
@@ -36,13 +39,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := run(context.Background(), *bundleDir, *output); err != nil {
+	if err := run(context.Background(), *bundleDir, *wasmCacheDir, *output); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, bundleDir, output string) error {
+func run(ctx context.Context, bundleDir, wasmCacheDir, output string) error {
 	// Step 1: Download and extract the TeX bundle (~800 MB, skipped if already present).
 	fmt.Fprintln(os.Stderr, "Preparing bundle...")
 	if err := tecgonic.PrepareBundle(ctx, bundleDir, "", false, tecgonic.WithProgress(os.Stderr)); err != nil {
@@ -50,8 +53,13 @@ func run(ctx context.Context, bundleDir, output string) error {
 	}
 
 	// Step 2: Create the compiler (pre-compiles the WASM module).
+	// Using WithCompilationCache cuts startup from ~1.4s to ~50ms on subsequent runs.
 	fmt.Fprintln(os.Stderr, "Initializing compiler...")
-	compiler, err := tecgonic.New(ctx, tecgonic.WithDefaultBundleDir(bundleDir))
+	opts := []tecgonic.CompilerOption{tecgonic.WithDefaultBundleDir(bundleDir)}
+	if wasmCacheDir != "" {
+		opts = append(opts, tecgonic.WithCompilationCache(wasmCacheDir))
+	}
+	compiler, err := tecgonic.New(ctx, opts...)
 	if err != nil {
 		return fmt.Errorf("creating compiler: %w", err)
 	}
