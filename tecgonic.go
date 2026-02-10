@@ -33,13 +33,13 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 	rt := wazero.NewRuntimeWithConfig(ctx, rtConfig)
 
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
-		rt.Close(ctx)
+		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("tecgonic: instantiating WASI: %w", err)
 	}
 
 	compiled, err := rt.CompileModule(ctx, wasm.TectonicWASM)
 	if err != nil {
-		rt.Close(ctx)
+		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("tecgonic: compiling WASM module: %w", err)
 	}
 
@@ -72,7 +72,7 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string) error {
 	if err != nil {
 		return fmt.Errorf("tecgonic: creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	inputDir := filepath.Join(tmpDir, "input")
 	outputDir := filepath.Join(tmpDir, "output")
@@ -106,7 +106,7 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string) error {
 	if err != nil {
 		return fmt.Errorf("tecgonic: instantiating module for format generation: %w", err)
 	}
-	defer mod.Close(ctx)
+	defer func() { _ = mod.Close(ctx) }()
 
 	fn := mod.ExportedFunction("tectonic_generate_format")
 	if fn == nil {
@@ -178,7 +178,7 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	if err != nil {
 		return nil, fmt.Errorf("tecgonic: creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	inputDir := filepath.Join(tmpDir, "input")
 	outputDir := filepath.Join(tmpDir, "output")
@@ -233,7 +233,7 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	if err != nil {
 		return nil, fmt.Errorf("tecgonic: instantiating module: %w", err)
 	}
-	defer mod.Close(ctx)
+	defer func() { _ = mod.Close(ctx) }()
 
 	// Call tectonic_compile_defaults
 	fn := mod.ExportedFunction("tectonic_compile_defaults")

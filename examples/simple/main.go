@@ -55,7 +55,7 @@ func run(ctx context.Context, bundleDir, output string) error {
 	if err != nil {
 		return fmt.Errorf("creating compiler: %w", err)
 	}
-	defer compiler.Close(ctx)
+	defer func() { _ = compiler.Close(ctx) }()
 
 	// Step 3: Generate the LaTeX format file (skipped if latex.fmt already exists).
 	fmt.Fprintln(os.Stderr, "Generating format...")

@@ -50,9 +50,9 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 			if pr.total > 0 {
 				totalMB := pr.total / (1024 * 1024)
 				pct := cur * 100 / pr.total
-				fmt.Fprintf(pr.w, "  Downloading: %d / %d MB (%d%%)\n", mb, totalMB, pct)
+				_, _ = fmt.Fprintf(pr.w, "  Downloading: %d / %d MB (%d%%)\n", mb, totalMB, pct)
 			} else {
-				fmt.Fprintf(pr.w, "  Downloading: %d MB\n", mb)
+				_, _ = fmt.Fprintf(pr.w, "  Downloading: %d MB\n", mb)
 			}
 		}
 	}
@@ -98,7 +98,7 @@ func PrepareBundle(ctx context.Context, destDir, bundleURL string, force bool, o
 	if err != nil {
 		return fmt.Errorf("tecgonic: downloading bundle: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("tecgonic: downloading bundle: HTTP %d", resp.StatusCode)
@@ -150,22 +150,22 @@ func PrepareBundle(ctx context.Context, destDir, bundleURL string, force bool, o
 
 		if err := writeFile(destPath, reader); err != nil {
 			if gr != nil {
-				gr.Close()
+				_ = gr.Close()
 			}
 			return fmt.Errorf("tecgonic: writing %s: %w", name, err)
 		}
 		if gr != nil {
-			gr.Close()
+			_ = gr.Close()
 		}
 
 		files++
 		if cfg.progress != nil && files%10000 == 0 {
-			fmt.Fprintf(cfg.progress, "  Extracted %d files\n", files)
+			_, _ = fmt.Fprintf(cfg.progress, "  Extracted %d files\n", files)
 		}
 	}
 
 	if cfg.progress != nil {
-		fmt.Fprintf(cfg.progress, "  Extracted %d files (done)\n", files)
+		_, _ = fmt.Fprintf(cfg.progress, "  Extracted %d files (done)\n", files)
 	}
 
 	// Validate that extraction produced files (check for a common TeX file)
@@ -185,9 +185,9 @@ func writeFile(path string, r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
 	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
 		return err
 	}
 	return f.Close()

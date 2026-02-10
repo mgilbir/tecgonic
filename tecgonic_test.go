@@ -25,7 +25,7 @@ func TestCompileSimple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close(ctx)
+	defer func() { _ = c.Close(ctx) }()
 
 	tex := []byte(`\documentclass{article}
 \begin{document}
@@ -55,7 +55,7 @@ func TestCompileMultiple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close(ctx)
+	defer func() { _ = c.Close(ctx) }()
 
 	for i := 0; i < 3; i++ {
 		tex := []byte(`\documentclass{article}
@@ -81,7 +81,7 @@ func TestCompileError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close(ctx)
+	defer func() { _ = c.Close(ctx) }()
 
 	// Invalid TeX that should cause a compilation error
 	tex := []byte(`\documentclass{article}
@@ -111,7 +111,7 @@ func TestGenerateFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close(ctx)
+	defer func() { _ = c.Close(ctx) }()
 
 	// GenerateFormat should be a no-op if latex.fmt already exists
 	err = c.GenerateFormat(ctx, dir)
@@ -132,7 +132,7 @@ func TestNoBundleDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close(ctx)
+	defer func() { _ = c.Close(ctx) }()
 
 	tex := []byte(`\documentclass{article}
 \begin{document}
