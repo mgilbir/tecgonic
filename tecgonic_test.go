@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -146,4 +148,44 @@ Hello
 	}
 
 	t.Logf("Got expected error: %v", err)
+}
+
+func TestCompileConcurrent(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	const n = 5
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	pdfs := make([][]byte, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tex := []byte(fmt.Sprintf(`\documentclass{article}
+\begin{document}
+Concurrent document %d.
+\end{document}
+`, i))
+			pdfs[i], errs[i] = c.Compile(ctx, tex)
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Errorf("goroutine %d: Compile: %v", i, errs[i])
+			continue
+		}
+		if !bytes.HasPrefix(pdfs[i], []byte("%PDF-")) {
+			t.Errorf("goroutine %d: output is not a PDF", i)
+		}
+	}
 }
