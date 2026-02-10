@@ -19,6 +19,7 @@ type Compiler struct {
 	runtime  wazero.Runtime
 	compiled wazero.CompiledModule
 	config   compilerConfig
+	cache    wazero.CompilationCache
 }
 
 // New creates a new Compiler, initializing the WASM runtime and pre-compiling
@@ -30,16 +31,35 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 	}
 
 	rtConfig := wazero.NewRuntimeConfig().WithCloseOnContextDone(true)
+
+	var cache wazero.CompilationCache
+	if cfg.compilationCacheDir != "" {
+		var err error
+		cache, err = wazero.NewCompilationCacheWithDir(cfg.compilationCacheDir)
+		if err != nil {
+			return nil, fmt.Errorf("tecgonic: creating compilation cache: %w", err)
+		}
+		rtConfig = rtConfig.WithCompilationCache(cache)
+	}
+
 	rt := wazero.NewRuntimeWithConfig(ctx, rtConfig)
+
+	closeCache := func() {
+		if cache != nil {
+			_ = cache.Close(ctx)
+		}
+	}
 
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
 		_ = rt.Close(ctx)
+		closeCache()
 		return nil, fmt.Errorf("tecgonic: instantiating WASI: %w", err)
 	}
 
 	compiled, err := rt.CompileModule(ctx, wasm.TectonicWASM)
 	if err != nil {
 		_ = rt.Close(ctx)
+		closeCache()
 		return nil, fmt.Errorf("tecgonic: compiling WASM module: %w", err)
 	}
 
@@ -47,12 +67,19 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 		runtime:  rt,
 		compiled: compiled,
 		config:   cfg,
+		cache:    cache,
 	}, nil
 }
 
 // Close releases the WASM runtime and all associated resources.
 func (c *Compiler) Close(ctx context.Context) error {
-	return c.runtime.Close(ctx)
+	err := c.runtime.Close(ctx)
+	if c.cache != nil {
+		if cacheErr := c.cache.Close(ctx); err == nil {
+			err = cacheErr
+		}
+	}
+	return err
 }
 
 // GenerateFormat generates the LaTeX format file (latex.fmt) in the bundle directory.

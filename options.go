@@ -4,8 +4,9 @@ import "io"
 
 // compilerConfig holds configuration set once on New().
 type compilerConfig struct {
-	defaultBundleDir string
-	defaultFontsDir  string
+	defaultBundleDir    string
+	defaultFontsDir     string
+	compilationCacheDir string
 }
 
 // CompilerOption configures a Compiler at creation time.
@@ -22,6 +23,14 @@ func WithDefaultBundleDir(dir string) CompilerOption {
 func WithDefaultFontsDir(dir string) CompilerOption {
 	return func(c *compilerConfig) {
 		c.defaultFontsDir = dir
+	}
+}
+
+// WithCompilationCache enables caching of the compiled WASM module on disk.
+// Subsequent New() calls with the same directory will skip WASM compilation.
+func WithCompilationCache(dir string) CompilerOption {
+	return func(c *compilerConfig) {
+		c.compilationCacheDir = dir
 	}
 }
 
