@@ -189,3 +189,28 @@ Concurrent document %d.
 		}
 	}
 }
+
+func TestCompileContextCancel(t *testing.T) {
+	dir := bundleDir(t)
+
+	c, err := New(context.Background(), WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(context.Background()) }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	tex := []byte(`\documentclass{article}
+\begin{document}
+Hello
+\end{document}
+`)
+
+	_, err = c.Compile(ctx, tex)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	t.Logf("Got expected error: %v", err)
+}
