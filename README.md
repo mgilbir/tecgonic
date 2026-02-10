@@ -53,3 +53,10 @@ make wasm
 ```
 
 This uses Docker to cross-compile Tectonic to `wasm32-wasip1`. See the [Dockerfile](Dockerfile) for details.
+
+## Thanks
+
+This project would not be possible without:
+
+- [Tectonic](https://tectonic-typesetting.github.io/) — a modernized, complete, self-contained TeX/LaTeX engine. Tectonic does all the heavy lifting of turning LaTeX into PDF; tecgonic simply makes it callable from Go.
+- [wazero](https://wazero.io/) — a zero-dependency WebAssembly runtime for Go. wazero makes it practical to embed the Tectonic WASM binary in a pure-Go library with no CGo and no external dependencies.
