@@ -214,3 +214,36 @@ Hello
 	}
 	t.Logf("Got expected error: %v", err)
 }
+
+func BenchmarkNew(b *testing.B) {
+	ctx := context.Background()
+
+	b.Run("NoCache", func(b *testing.B) {
+		for b.Loop() {
+			c, err := New(ctx)
+			if err != nil {
+				b.Fatalf("New: %v", err)
+			}
+			_ = c.Close(ctx)
+		}
+	})
+
+	b.Run("WithCache", func(b *testing.B) {
+		cacheDir := b.TempDir()
+		// Warm the cache with a single call outside the timer.
+		c, err := New(ctx, WithCompilationCache(cacheDir))
+		if err != nil {
+			b.Fatalf("New (warm): %v", err)
+		}
+		_ = c.Close(ctx)
+
+		b.ResetTimer()
+		for b.Loop() {
+			c, err := New(ctx, WithCompilationCache(cacheDir))
+			if err != nil {
+				b.Fatalf("New: %v", err)
+			}
+			_ = c.Close(ctx)
+		}
+	})
+}
