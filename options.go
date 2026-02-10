@@ -34,6 +34,22 @@ func WithCompilationCache(dir string) CompilerOption {
 	}
 }
 
+// generateFormatConfig holds per-call configuration for GenerateFormat().
+type generateFormatConfig struct {
+	stderr io.Writer
+}
+
+// GenerateFormatOption configures a single GenerateFormat() call.
+type GenerateFormatOption func(*generateFormatConfig)
+
+// WithGenerateFormatStderr tees tectonic's diagnostic output to the given writer
+// during format generation.
+func WithGenerateFormatStderr(w io.Writer) GenerateFormatOption {
+	return func(c *generateFormatConfig) {
+		c.stderr = w
+	}
+}
+
 // compileConfig holds per-call configuration for Compile().
 type compileConfig struct {
 	bundleDir string

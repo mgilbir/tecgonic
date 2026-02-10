@@ -85,7 +85,11 @@ func (c *Compiler) Close(ctx context.Context) error {
 // GenerateFormat generates the LaTeX format file (latex.fmt) in the bundle directory.
 // This must be called once after extracting a bundle before compilations can succeed.
 // If latex.fmt already exists in bundleDir, this is a no-op.
-func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string) error {
+func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ...GenerateFormatOption) error {
+	var fmtCfg generateFormatConfig
+	for _, o := range opts {
+		o(&fmtCfg)
+	}
 	if bundleDir == "" {
 		return fmt.Errorf("tecgonic: no bundle directory specified")
 	}
@@ -113,6 +117,10 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string) error {
 	}
 
 	var stderrBuf bytes.Buffer
+	var stderrWriter io.Writer = &stderrBuf
+	if fmtCfg.stderr != nil {
+		stderrWriter = io.MultiWriter(&stderrBuf, fmtCfg.stderr)
+	}
 
 	fsConfig := wazero.NewFSConfig().
 		WithDirMount(inputDir, "/input").
@@ -124,7 +132,7 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string) error {
 	modConfig := wazero.NewModuleConfig().
 		WithName("").
 		WithStdout(io.Discard).
-		WithStderr(&stderrBuf).
+		WithStderr(stderrWriter).
 		WithFSConfig(fsConfig).
 		WithEnv("TECTONIC_FONT_DIR", "/fonts").
 		WithEnv("TECTONIC_CACHE_DIR", "/cache")
