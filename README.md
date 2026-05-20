@@ -49,6 +49,27 @@ Hello, World!
 
 See [examples/simple](examples/simple) for a complete runnable example.
 
+## Multi-file documents
+
+Use `WithInputFiles` to provide auxiliary files alongside the main `.tex`
+source. This supports documents that rely on `\input`, `\include`,
+`\includegraphics`, `.bib`, `.cls`, or `.sty` files.
+
+Paths must be relative and stay within the compilation input root.
+
+```go
+pdf, err := compiler.Compile(ctx, []byte(`\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\input{sections/intro.tex}
+\includegraphics{images/logo.png}
+\end{document}
+`), tecgonic.WithInputFiles(map[string][]byte{
+	"sections/intro.tex": []byte("Hello from an auxiliary file."),
+	"images/logo.png":    logoPNG,
+}))
+```
+
 ## WASM compilation cache
 
 Creating a `Compiler` with `New()` involves compiling the Tectonic WASM module, which takes ~1.4 s. Pass `WithCompilationCache(dir)` to cache the compiled module on disk. Subsequent calls load the cached result in ~50 ms — a **~26x speedup**.

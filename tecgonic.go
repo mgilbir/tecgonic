@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mgilbir/tecgonic/wasm"
 	"github.com/tetratelabs/wazero"
@@ -239,6 +240,9 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	if err := os.WriteFile(texPath, texSource, 0o644); err != nil {
 		return nil, fmt.Errorf("tecgonic: writing input.tex: %w", err)
 	}
+	if err := writeInputFiles(inputDir, cfg.inputFiles); err != nil {
+		return nil, err
+	}
 
 	// Set up stderr capture
 	var stderrBuf bytes.Buffer
@@ -316,4 +320,40 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 
 	return pdfBytes, nil
+}
+
+func writeInputFiles(inputDir string, files map[string][]byte) error {
+	for name, data := range files {
+		clean := filepath.Clean(name)
+		if clean == "." || clean == "" {
+			return fmt.Errorf("tecgonic: invalid input file path %q", name)
+		}
+		if filepath.IsAbs(clean) {
+			return fmt.Errorf("tecgonic: input file path must be relative: %q", name)
+		}
+		if clean == ".." || hasParentRef(clean) {
+			return fmt.Errorf("tecgonic: input file path escapes input root: %q", name)
+		}
+
+		path := filepath.Join(inputDir, clean)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("tecgonic: creating input file directory for %q: %w", name, err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("tecgonic: writing input file %q: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+
+func hasParentRef(path string) bool {
+	for _, part := range strings.Split(path, string(filepath.Separator)) {
+		if part == ".." {
+			return true
+		}
+	}
+
+	return false
 }

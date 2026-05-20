@@ -54,6 +54,7 @@ func WithGenerateFormatStderr(w io.Writer) GenerateFormatOption {
 type compileConfig struct {
 	bundleDir string
 	fontsDir  string
+	inputFiles map[string][]byte
 	stderr    io.Writer
 	output    io.Writer
 }
@@ -72,6 +73,25 @@ func WithBundleDir(dir string) CompileOption {
 func WithFontsDir(dir string) CompileOption {
 	return func(c *compileConfig) {
 		c.fontsDir = dir
+	}
+}
+
+// WithInputFiles adds auxiliary files to the compilation input directory.
+//
+// Paths must be relative and stay within the input root. This is useful for
+// multi-file documents that rely on \input{}, \include{}, or
+// \includegraphics{}.
+func WithInputFiles(files map[string][]byte) CompileOption {
+	return func(c *compileConfig) {
+		if len(files) == 0 {
+			c.inputFiles = nil
+			return
+		}
+
+		c.inputFiles = make(map[string][]byte, len(files))
+		for name, data := range files {
+			c.inputFiles[name] = append([]byte(nil), data...)
+		}
 	}
 }
 

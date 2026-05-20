@@ -75,6 +75,60 @@ Test document number ` + string(rune('1'+i)) + `.
 	}
 }
 
+func TestCompileWithInputFiles(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\input{sections/content.tex}
+\includegraphics[width=1cm]{images/pixel.png}
+\end{document}
+`)
+
+	pdf, err := c.Compile(ctx, tex, WithInputFiles(map[string][]byte{
+		"sections/content.tex": []byte("Hello from input files.\n"),
+		"images/pixel.png":     onePixelPNG(),
+	}))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("output is not a PDF")
+	}
+}
+
+func TestCompileWithInputFilesRejectsParentRef(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}
+\begin{document}
+Hello
+\end{document}
+`)
+
+	_, err = c.Compile(ctx, tex, WithInputFiles(map[string][]byte{
+		"../escape.txt": []byte("nope"),
+	}))
+	if err == nil {
+		t.Fatal("expected error for parent-ref input file, got nil")
+	}
+}
+
 func TestCompileError(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()
@@ -246,4 +300,18 @@ func BenchmarkNew(b *testing.B) {
 			_ = c.Close(ctx)
 		}
 	})
+}
+
+func onePixelPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+		0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+		0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+		0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
 }
