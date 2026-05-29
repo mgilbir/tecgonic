@@ -105,7 +105,7 @@ func TestCompileWithInputFiles(t *testing.T) {
 	}
 }
 
-func TestCompileWithInputFilesRejectsParentRef(t *testing.T) {
+func TestCompileWithInputFilesRejectsUnsafePaths(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()
 
@@ -121,35 +121,23 @@ Hello
 \end{document}
 `)
 
-	_, err = c.Compile(ctx, tex, WithInputFiles(map[string][]byte{
-		"../escape.txt": []byte("nope"),
-	}))
-	if err == nil {
-		t.Fatal("expected error for parent-ref input file, got nil")
+	cases := map[string]string{
+		"parent ref":           "../escape.txt",
+		"bare parent":          "..",
+		"normalized escape":    "sections/../../escape.txt",
+		"absolute path":        "/etc/passwd",
+		"reserved main source": "input.tex",
+		"reserved via dot":     "./input.tex",
 	}
-}
-
-func TestCompileWithInputFilesRejectsMainSource(t *testing.T) {
-	dir := bundleDir(t)
-	ctx := context.Background()
-
-	c, err := New(ctx, WithDefaultBundleDir(dir))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = c.Close(ctx) }()
-
-	tex := []byte(`\documentclass{article}
-\begin{document}
-Hello
-\end{document}
-`)
-
-	_, err = c.Compile(ctx, tex, WithInputFiles(map[string][]byte{
-		"input.tex": []byte("would overwrite the main source"),
-	}))
-	if err == nil {
-		t.Fatal("expected error for input file overwriting the main source, got nil")
+	for label, key := range cases {
+		t.Run(label, func(t *testing.T) {
+			_, err := c.Compile(ctx, tex, WithInputFiles(map[string][]byte{
+				key: []byte("nope"),
+			}))
+			if err == nil {
+				t.Fatalf("expected error for unsafe input file path %q, got nil", key)
+			}
+		})
 	}
 }
 

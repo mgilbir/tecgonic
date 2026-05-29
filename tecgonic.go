@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -326,40 +327,35 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 // compilation input root. It is reserved: auxiliary input files may not use it.
 const mainInputName = "input.tex"
 
+// writeInputFiles writes auxiliary files into the compilation input root.
+//
+// Keys are treated as logical, slash-separated paths (matching LaTeX's \input
+// convention) and validated independently of the host OS: they must be
+// relative, must not escape the input root via "..", and must not collide with
+// the main source. The validated path is converted to a host path only for the
+// actual write.
 func writeInputFiles(inputDir string, files map[string][]byte) error {
 	for name, data := range files {
-		clean := filepath.Clean(name)
-		if clean == "." || clean == "" {
+		clean := path.Clean(filepath.ToSlash(name))
+		switch {
+		case clean == "." || clean == "":
 			return fmt.Errorf("tecgonic: invalid input file path %q", name)
-		}
-		if filepath.IsAbs(clean) {
+		case filepath.IsAbs(name) || path.IsAbs(clean):
 			return fmt.Errorf("tecgonic: input file path must be relative: %q", name)
-		}
-		if clean == ".." || hasParentRef(clean) {
+		case clean == ".." || strings.HasPrefix(clean, "../"):
 			return fmt.Errorf("tecgonic: input file path escapes input root: %q", name)
-		}
-		if clean == mainInputName {
+		case clean == mainInputName:
 			return fmt.Errorf("tecgonic: input file path %q is reserved for the main source", name)
 		}
 
-		path := filepath.Join(inputDir, clean)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		dst := filepath.Join(inputDir, filepath.FromSlash(clean))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("tecgonic: creating input file directory for %q: %w", name, err)
 		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
 			return fmt.Errorf("tecgonic: writing input file %q: %w", name, err)
 		}
 	}
 
 	return nil
-}
-
-func hasParentRef(path string) bool {
-	for _, part := range strings.Split(path, string(filepath.Separator)) {
-		if part == ".." {
-			return true
-		}
-	}
-
-	return false
 }
