@@ -10,11 +10,11 @@ import (
 	"testing"
 )
 
-func bundleDir(t *testing.T) string {
-	t.Helper()
+func bundleDir(tb testing.TB) string {
+	tb.Helper()
 	dir := os.Getenv("TECGONIC_BUNDLE_DIR")
 	if dir == "" {
-		t.Skip("TECGONIC_BUNDLE_DIR not set")
+		tb.Skip("TECGONIC_BUNDLE_DIR not set")
 	}
 	return dir
 }
@@ -193,7 +193,7 @@ Concurrent document %d.
 func TestCompileContextCancel(t *testing.T) {
 	dir := bundleDir(t)
 
-	c, err := New(context.Background(), WithDefaultBundleDir(dir))
+	c, err := New(context.Background(), WithDefaultBundleDir(dir), WithContextCancellation())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

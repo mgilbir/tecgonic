@@ -69,6 +69,42 @@ BenchmarkNew/WithCache    22     51 ms/op  6.8 MB/op    31k allocs/op
 
 The cache directory can be shared across processes. The first invocation populates the cache; all later invocations (including from different processes) read from it.
 
+## Context cancellation and performance
+
+By default, `Compile` runs at full speed but does **not** honor context
+cancellation or deadlines once a compilation has started: the call runs to
+completion regardless of the context, and keeps a CPU core busy until it
+finishes.
+
+This is deliberate. Making a running compilation interruptible requires wazero
+to insert a termination check on every loop back-edge and function call (its
+`WithCloseOnContextDone` option). For CPU-heavy documents — most notably large
+`tabularray` `longtblr` tables, which do a lot of expl3 macro expansion per row
+— that check dominates runtime. Measured on a ~100-row colored `longtblr` table:
+
+| Mode | Time |
+| --- | --- |
+| Default (cancellation off) | **34 s** |
+| `WithContextCancellation()` | 164 s (**~5× slower**) |
+
+So context cancellation is opt-in. Enable it only when you need to abort or
+time out long-running compilations (e.g. untrusted input that could loop), and
+accept the per-iteration cost:
+
+```go
+compiler, err := tecgonic.New(ctx,
+	tecgonic.WithDefaultBundleDir(bundleDir),
+	tecgonic.WithContextCancellation(), // interruptible, ~5x slower on heavy docs
+)
+```
+
+You can reproduce the comparison with:
+
+```bash
+TECGONIC_BUNDLE_DIR=/path/to/bundle TECGONIC_BENCH_ROWS=100 \
+	go test -run '^$' -bench BenchmarkCompileLongtblr -benchtime=1x .
+```
+
 ## Building the WASM module
 
 The pre-built WASM artifact is included under `wasm/`. To rebuild it from the Tectonic source:

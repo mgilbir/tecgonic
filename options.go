@@ -7,6 +7,7 @@ type compilerConfig struct {
 	defaultBundleDir    string
 	defaultFontsDir     string
 	compilationCacheDir string
+	contextCancellation bool
 }
 
 // CompilerOption configures a Compiler at creation time.
@@ -31,6 +32,25 @@ func WithDefaultFontsDir(dir string) CompilerOption {
 func WithCompilationCache(dir string) CompilerOption {
 	return func(c *compilerConfig) {
 		c.compilationCacheDir = dir
+	}
+}
+
+// WithContextCancellation makes Compile honor context cancellation and
+// deadlines while a compilation is running.
+//
+// It is OFF by default for performance: enabling it forces wazero to insert a
+// termination check on every loop back-edge and function call, which slows
+// CPU-heavy documents dramatically. Measured on a large tabularray longtblr
+// table, enabling it was ~5x slower (34s vs 164s).
+//
+// When this option is OFF (the default), wazero does not consult the context
+// during a compilation at all: a Compile call runs to completion regardless of
+// cancellation or deadline, and the goroutine keeps using a CPU core until it
+// finishes. Enable this only when you need to abort or time out long-running
+// compilations and are willing to pay the per-iteration cost.
+func WithContextCancellation() CompilerOption {
+	return func(c *compilerConfig) {
+		c.contextCancellation = true
 	}
 }
 
