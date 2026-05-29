@@ -236,9 +236,9 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 
 	// Write TeX source to input directory
-	texPath := filepath.Join(inputDir, "input.tex")
+	texPath := filepath.Join(inputDir, mainInputName)
 	if err := os.WriteFile(texPath, texSource, 0o644); err != nil {
-		return nil, fmt.Errorf("tecgonic: writing input.tex: %w", err)
+		return nil, fmt.Errorf("tecgonic: writing %s: %w", mainInputName, err)
 	}
 	if err := writeInputFiles(inputDir, cfg.inputFiles); err != nil {
 		return nil, err
@@ -322,6 +322,10 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	return pdfBytes, nil
 }
 
+// mainInputName is the filename of the main LaTeX source written into the
+// compilation input root. It is reserved: auxiliary input files may not use it.
+const mainInputName = "input.tex"
+
 func writeInputFiles(inputDir string, files map[string][]byte) error {
 	for name, data := range files {
 		clean := filepath.Clean(name)
@@ -333,6 +337,9 @@ func writeInputFiles(inputDir string, files map[string][]byte) error {
 		}
 		if clean == ".." || hasParentRef(clean) {
 			return fmt.Errorf("tecgonic: input file path escapes input root: %q", name)
+		}
+		if clean == mainInputName {
+			return fmt.Errorf("tecgonic: input file path %q is reserved for the main source", name)
 		}
 
 		path := filepath.Join(inputDir, clean)
