@@ -52,11 +52,11 @@ func WithGenerateFormatStderr(w io.Writer) GenerateFormatOption {
 
 // compileConfig holds per-call configuration for Compile().
 type compileConfig struct {
-	bundleDir string
-	fontsDir  string
+	bundleDir  string
+	fontsDir   string
 	inputFiles map[string][]byte
-	stderr    io.Writer
-	output    io.Writer
+	stderr     io.Writer
+	output     io.Writer
 }
 
 // CompileOption configures a single Compile() call.

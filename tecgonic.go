@@ -347,7 +347,6 @@ func writeInputFiles(inputDir string, files map[string][]byte) error {
 	return nil
 }
 
-
 func hasParentRef(path string) bool {
 	for _, part := range strings.Split(path, string(filepath.Separator)) {
 		if part == ".." {
