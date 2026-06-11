@@ -5,10 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
+	"testing/fstest"
 
 	"github.com/mgilbir/tecgonic/wasm"
 	"github.com/tetratelabs/wazero"
@@ -107,12 +108,11 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	inputDir := filepath.Join(tmpDir, "input")
 	outputDir := filepath.Join(tmpDir, "output")
 	cacheDir := filepath.Join(tmpDir, "cache")
 	fontsDir := filepath.Join(tmpDir, "fonts")
 
-	for _, dir := range []string{inputDir, outputDir, cacheDir, fontsDir} {
+	for _, dir := range []string{outputDir, cacheDir, fontsDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("tecgonic: creating directory %s: %w", dir, err)
 		}
@@ -125,7 +125,7 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 	}
 
 	fsConfig := wazero.NewFSConfig().
-		WithDirMount(inputDir, "/input").
+		WithFSMount(fstest.MapFS{}, "/input").
 		WithDirMount(outputDir, "/output").
 		WithReadOnlyDirMount(bundleDir, "/bundle").
 		WithDirMount(fontsDir, "/fonts").
@@ -217,11 +217,10 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	inputDir := filepath.Join(tmpDir, "input")
 	outputDir := filepath.Join(tmpDir, "output")
 	cacheDir := filepath.Join(tmpDir, "cache")
 
-	for _, dir := range []string{inputDir, outputDir, cacheDir} {
+	for _, dir := range []string{outputDir, cacheDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("tecgonic: creating directory %s: %w", dir, err)
 		}
@@ -236,12 +235,10 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 		}
 	}
 
-	// Write TeX source to input directory
-	texPath := filepath.Join(inputDir, mainInputName)
-	if err := os.WriteFile(texPath, texSource, 0o644); err != nil {
-		return nil, fmt.Errorf("tecgonic: writing %s: %w", mainInputName, err)
-	}
-	if err := writeInputFiles(inputDir, cfg.inputFiles); err != nil {
+	// Assemble the main source and any auxiliary inputs into an in-memory
+	// filesystem; the WASM module never sees host paths for its inputs.
+	inputFS, err := buildInputFS(texSource, cfg.inputFiles, cfg.inputFS)
+	if err != nil {
 		return nil, err
 	}
 
@@ -254,7 +251,7 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 
 	// Configure filesystem mounts
 	fsConfig := wazero.NewFSConfig().
-		WithDirMount(inputDir, "/input").
+		WithFSMount(inputFS, "/input").
 		WithDirMount(outputDir, "/output").
 		WithReadOnlyDirMount(cfg.bundleDir, "/bundle").
 		WithDirMount(fontsDir, "/fonts").
@@ -327,35 +324,72 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 // compilation input root. It is reserved: auxiliary input files may not use it.
 const mainInputName = "input.tex"
 
-// writeInputFiles writes auxiliary files into the compilation input root.
+// buildInputFS assembles the in-memory filesystem mounted read-only at /input
+// in the WASM module. It always contains the main source as input.tex, plus
+// any auxiliary files from WithInputFiles and a snapshot of any fs.FS from
+// WithInputFS. Inputs never touch the host filesystem.
 //
-// Keys are treated as logical, slash-separated paths (matching LaTeX's \input
-// convention) and validated independently of the host OS: they must be
+// Map keys are treated as logical, slash-separated paths (matching LaTeX's
+// \input convention) and validated independently of the host OS: they must be
 // relative, must not escape the input root via "..", and must not collide with
-// the main source. The validated path is converted to a host path only for the
-// actual write.
-func writeInputFiles(inputDir string, files map[string][]byte) error {
-	for name, data := range files {
-		clean := path.Clean(filepath.ToSlash(name))
-		switch {
-		case clean == "." || clean == "":
-			return fmt.Errorf("tecgonic: invalid input file path %q", name)
-		case filepath.IsAbs(name) || path.IsAbs(clean):
-			return fmt.Errorf("tecgonic: input file path must be relative: %q", name)
-		case clean == ".." || strings.HasPrefix(clean, "../"):
-			return fmt.Errorf("tecgonic: input file path escapes input root: %q", name)
-		case clean == mainInputName:
-			return fmt.Errorf("tecgonic: input file path %q is reserved for the main source", name)
-		}
+// the main source. Paths from the fs.FS are valid by construction (fs.ValidPath)
+// but are checked against the same collisions.
+func buildInputFS(texSource []byte, files map[string][]byte, fsys fs.FS) (fs.FS, error) {
+	m := fstest.MapFS{
+		mainInputName: &fstest.MapFile{Data: texSource, Mode: 0o644},
+	}
 
-		dst := filepath.Join(inputDir, filepath.FromSlash(clean))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fmt.Errorf("tecgonic: creating input file directory for %q: %w", name, err)
+	for name, data := range files {
+		clean, err := validateInputPath(name)
+		if err != nil {
+			return nil, err
 		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
-			return fmt.Errorf("tecgonic: writing input file %q: %w", name, err)
+		m[clean] = &fstest.MapFile{Data: data, Mode: 0o644}
+	}
+
+	if fsys != nil {
+		err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return fmt.Errorf("tecgonic: walking input fs at %q: %w", p, err)
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if p == mainInputName {
+				return fmt.Errorf("tecgonic: input fs path %q is reserved for the main source", p)
+			}
+			if _, exists := m[p]; exists {
+				return fmt.Errorf("tecgonic: input fs path %q collides with an input file", p)
+			}
+			data, err := fs.ReadFile(fsys, p)
+			if err != nil {
+				return fmt.Errorf("tecgonic: reading input fs file %q: %w", p, err)
+			}
+			m[p] = &fstest.MapFile{Data: data, Mode: 0o644}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return nil
+	return m, nil
+}
+
+// validateInputPath normalizes a WithInputFiles key to its slash-separated
+// form and checks that the result is something the in-memory filesystem can
+// actually serve. Since inputs never touch the host filesystem, this is not a
+// security boundary: it exists to fail fast on keys that fs.FS semantics make
+// unreachable (absolute paths, escapes via "..", empty names) and on the
+// reserved main-source name, which would otherwise silently overwrite the
+// main document.
+func validateInputPath(name string) (string, error) {
+	clean := path.Clean(filepath.ToSlash(name))
+	if clean == "." || !fs.ValidPath(clean) {
+		return "", fmt.Errorf("tecgonic: invalid input file path %q", name)
+	}
+	if clean == mainInputName {
+		return "", fmt.Errorf("tecgonic: input file path %q is reserved for the main source", name)
+	}
+	return clean, nil
 }

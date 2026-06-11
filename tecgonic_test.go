@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"testing/fstest"
 )
 
 func bundleDir(t *testing.T) string {
@@ -103,6 +104,112 @@ func TestCompileWithInputFiles(t *testing.T) {
 	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
 		t.Fatalf("output is not a PDF")
 	}
+}
+
+func TestCompileWithInputFS(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\input{sections/content.tex}
+\includegraphics[width=1cm]{images/pixel.png}
+\end{document}
+`)
+
+	fsys := fstest.MapFS{
+		"sections/content.tex": &fstest.MapFile{Data: []byte("Hello from an input FS.\n")},
+		"images/pixel.png":     &fstest.MapFile{Data: onePixelPNG()},
+	}
+
+	pdf, err := c.Compile(ctx, tex, WithInputFS(fsys))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("output is not a PDF")
+	}
+}
+
+func TestCompileWithInputFilesAndFS(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\input{sections/content.tex}
+\includegraphics[width=1cm]{images/pixel.png}
+\end{document}
+`)
+
+	pdf, err := c.Compile(ctx, tex,
+		WithInputFiles(map[string][]byte{
+			"sections/content.tex": []byte("Hello from input files.\n"),
+		}),
+		WithInputFS(fstest.MapFS{
+			"images/pixel.png": &fstest.MapFile{Data: onePixelPNG()},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("output is not a PDF")
+	}
+}
+
+func TestCompileWithInputFSRejectsCollisions(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}
+\begin{document}
+Hello
+\end{document}
+`)
+
+	t.Run("reserved main source", func(t *testing.T) {
+		_, err := c.Compile(ctx, tex, WithInputFS(fstest.MapFS{
+			"input.tex": &fstest.MapFile{Data: []byte("nope")},
+		}))
+		if err == nil {
+			t.Fatal("expected error for input.tex in input FS, got nil")
+		}
+	})
+
+	t.Run("collision with input files", func(t *testing.T) {
+		_, err := c.Compile(ctx, tex,
+			WithInputFiles(map[string][]byte{
+				"shared.tex": []byte("from map"),
+			}),
+			WithInputFS(fstest.MapFS{
+				"shared.tex": &fstest.MapFile{Data: []byte("from fs")},
+			}),
+		)
+		if err == nil {
+			t.Fatal("expected error for path present in both sources, got nil")
+		}
+	})
 }
 
 func TestCompileWithInputFilesRejectsUnsafePaths(t *testing.T) {

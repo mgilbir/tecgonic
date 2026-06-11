@@ -51,11 +51,13 @@ See [examples/simple](examples/simple) for a complete runnable example.
 
 ## Multi-file documents
 
-Use `WithInputFiles` to provide auxiliary files alongside the main `.tex`
-source. This supports documents that rely on `\input`, `\include`,
-`\includegraphics`, `.bib`, `.cls`, or `.sty` files.
+Auxiliary files can be provided alongside the main `.tex` source for
+documents that rely on `\input`, `\include`, `\includegraphics`, `.bib`,
+`.cls`, or `.sty` files. All inputs are served to the WASM module from an
+in-memory filesystem; they are never written to the host filesystem.
 
-Paths must be relative and stay within the compilation input root.
+Use `WithInputFiles` to pass files as in-memory bytes. Paths must be
+relative and stay within the compilation input root.
 
 ```go
 pdf, err := compiler.Compile(ctx, []byte(`\documentclass{article}
@@ -69,6 +71,21 @@ pdf, err := compiler.Compile(ctx, []byte(`\documentclass{article}
 	"images/logo.png":    logoPNG,
 }))
 ```
+
+Use `WithInputFS` to pass any `fs.FS` (an `embed.FS`, `os.DirFS`,
+`fstest.MapFS`, ...). The filesystem is snapshotted into memory when
+`Compile` is called.
+
+```go
+//go:embed assets
+var assets embed.FS
+
+fsys, _ := fs.Sub(assets, "assets")
+pdf, err := compiler.Compile(ctx, mainTex, tecgonic.WithInputFS(fsys))
+```
+
+Both options may be combined; a path present in both is an error, as is the
+reserved main-source name `input.tex`.
 
 ## WASM compilation cache
 

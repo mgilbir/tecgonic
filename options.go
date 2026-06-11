@@ -1,6 +1,9 @@
 package tecgonic
 
-import "io"
+import (
+	"io"
+	"io/fs"
+)
 
 // compilerConfig holds configuration set once on New().
 type compilerConfig struct {
@@ -55,6 +58,7 @@ type compileConfig struct {
 	bundleDir  string
 	fontsDir   string
 	inputFiles map[string][]byte
+	inputFS    fs.FS
 	stderr     io.Writer
 	output     io.Writer
 }
@@ -76,11 +80,15 @@ func WithFontsDir(dir string) CompileOption {
 	}
 }
 
-// WithInputFiles adds auxiliary files to the compilation input directory.
+// WithInputFiles adds auxiliary files to the compilation input root.
 //
 // Paths must be relative and stay within the input root. This is useful for
 // multi-file documents that rely on \input{}, \include{}, or
 // \includegraphics{}.
+//
+// The files are served to the WASM module from an in-memory filesystem; they
+// are never written to the host filesystem. May be combined with WithInputFS;
+// a path present in both is an error.
 func WithInputFiles(files map[string][]byte) CompileOption {
 	return func(c *compileConfig) {
 		if len(files) == 0 {
@@ -92,6 +100,20 @@ func WithInputFiles(files map[string][]byte) CompileOption {
 		for name, data := range files {
 			c.inputFiles[name] = append([]byte(nil), data...)
 		}
+	}
+}
+
+// WithInputFS adds auxiliary files from an fs.FS to the compilation input
+// root. Every regular file in fsys becomes available under its path, e.g. a
+// file "sections/intro.tex" can be referenced as \input{sections/intro.tex}.
+//
+// The filesystem is snapshotted into memory when Compile is called and served
+// to the WASM module from there; the WASM module never accesses the host
+// filesystem. May be combined with WithInputFiles; a path present in both is
+// an error. The path "input.tex" is reserved for the main source.
+func WithInputFS(fsys fs.FS) CompileOption {
+	return func(c *compileConfig) {
+		c.inputFS = fsys
 	}
 }
 
