@@ -30,7 +30,11 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 		o(&cfg)
 	}
 
-	rtConfig := wazero.NewRuntimeConfig().WithCloseOnContextDone(true)
+	// WithCloseOnContextDone makes running compilations interruptible via the
+	// context, but it forces wazero to insert termination checks on every loop
+	// and call, which is ~5x slower on CPU-heavy documents. It is therefore
+	// opt-in via WithContextCancellation().
+	rtConfig := wazero.NewRuntimeConfig().WithCloseOnContextDone(cfg.contextCancellation)
 
 	var cache wazero.CompilationCache
 	if cfg.compilationCacheDir != "" {
