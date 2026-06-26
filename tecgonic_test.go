@@ -37,9 +37,9 @@ Hello, World!
 `)
 
 	var stderr bytes.Buffer
-	pdf, err := c.Compile(ctx, tex, WithStderr(&stderr))
+	pdf, err := c.CompileSource(ctx, tex, WithStderr(&stderr))
 	if err != nil {
-		t.Fatalf("Compile: %v\nstderr: %s", err, stderr.String())
+		t.Fatalf("CompileSource: %v\nstderr: %s", err, stderr.String())
 	}
 
 	// PDF files start with %PDF-
@@ -66,43 +66,13 @@ func TestCompileMultiple(t *testing.T) {
 Test document number ` + string(rune('1'+i)) + `.
 \end{document}
 `)
-		pdf, err := c.Compile(ctx, tex)
+		pdf, err := c.CompileSource(ctx, tex)
 		if err != nil {
-			t.Fatalf("Compile #%d: %v", i+1, err)
+			t.Fatalf("CompileSource #%d: %v", i+1, err)
 		}
 		if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
 			t.Fatalf("Compile #%d: output is not a PDF", i+1)
 		}
-	}
-}
-
-func TestCompileWithInputFiles(t *testing.T) {
-	dir := bundleDir(t)
-	ctx := context.Background()
-
-	c, err := New(ctx, WithDefaultBundleDir(dir))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = c.Close(ctx) }()
-
-	tex := []byte(`\documentclass{article}
-\usepackage{graphicx}
-\begin{document}
-\input{sections/content.tex}
-\includegraphics[width=1cm]{images/pixel.png}
-\end{document}
-`)
-
-	pdf, err := c.Compile(ctx, tex, WithInputFiles(map[string][]byte{
-		"sections/content.tex": []byte("Hello from input files.\n"),
-		"images/pixel.png":     onePixelPNG(),
-	}))
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
-		t.Fatalf("output is not a PDF")
 	}
 }
 
@@ -116,20 +86,19 @@ func TestCompileWithInputFS(t *testing.T) {
 	}
 	defer func() { _ = c.Close(ctx) }()
 
-	tex := []byte(`\documentclass{article}
+	fsys := fstest.MapFS{
+		"paper.tex": &fstest.MapFile{Data: []byte(`\documentclass{article}
 \usepackage{graphicx}
 \begin{document}
 \input{sections/content.tex}
 \includegraphics[width=1cm]{images/pixel.png}
 \end{document}
-`)
-
-	fsys := fstest.MapFS{
+`)},
 		"sections/content.tex": &fstest.MapFile{Data: []byte("Hello from an input FS.\n")},
 		"images/pixel.png":     &fstest.MapFile{Data: onePixelPNG()},
 	}
 
-	pdf, err := c.Compile(ctx, tex, WithInputFS(fsys))
+	pdf, err := c.Compile(ctx, fsys, "paper.tex")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -138,7 +107,7 @@ func TestCompileWithInputFS(t *testing.T) {
 	}
 }
 
-func TestCompileWithInputFilesAndFS(t *testing.T) {
+func TestCompileRejectsMissingMain(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()
 
@@ -148,31 +117,17 @@ func TestCompileWithInputFilesAndFS(t *testing.T) {
 	}
 	defer func() { _ = c.Close(ctx) }()
 
-	tex := []byte(`\documentclass{article}
-\usepackage{graphicx}
-\begin{document}
-\input{sections/content.tex}
-\includegraphics[width=1cm]{images/pixel.png}
-\end{document}
-`)
-
-	pdf, err := c.Compile(ctx, tex,
-		WithInputFiles(map[string][]byte{
-			"sections/content.tex": []byte("Hello from input files.\n"),
-		}),
-		WithInputFS(fstest.MapFS{
-			"images/pixel.png": &fstest.MapFile{Data: onePixelPNG()},
-		}),
-	)
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
+	fsys := fstest.MapFS{
+		"other.tex": &fstest.MapFile{Data: []byte("not the entry point")},
 	}
-	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
-		t.Fatalf("output is not a PDF")
+	_, err = c.Compile(ctx, fsys, "paper.tex")
+	if err == nil {
+		t.Fatal("expected error when main source is absent from input fs, got nil")
 	}
+	t.Logf("Got expected error: %v", err)
 }
 
-func TestCompileWithInputFSRejectsCollisions(t *testing.T) {
+func TestCompileRejectsInvalidMainName(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()
 
@@ -182,67 +137,23 @@ func TestCompileWithInputFSRejectsCollisions(t *testing.T) {
 	}
 	defer func() { _ = c.Close(ctx) }()
 
-	tex := []byte(`\documentclass{article}
-\begin{document}
-Hello
-\end{document}
-`)
-
-	t.Run("reserved main source", func(t *testing.T) {
-		_, err := c.Compile(ctx, tex, WithInputFS(fstest.MapFS{
-			"input.tex": &fstest.MapFile{Data: []byte("nope")},
-		}))
-		if err == nil {
-			t.Fatal("expected error for input.tex in input FS, got nil")
-		}
-	})
-
-	t.Run("collision with input files", func(t *testing.T) {
-		_, err := c.Compile(ctx, tex,
-			WithInputFiles(map[string][]byte{
-				"shared.tex": []byte("from map"),
-			}),
-			WithInputFS(fstest.MapFS{
-				"shared.tex": &fstest.MapFile{Data: []byte("from fs")},
-			}),
-		)
-		if err == nil {
-			t.Fatal("expected error for path present in both sources, got nil")
-		}
-	})
-}
-
-func TestCompileWithInputFilesRejectsUnsafePaths(t *testing.T) {
-	dir := bundleDir(t)
-	ctx := context.Background()
-
-	c, err := New(ctx, WithDefaultBundleDir(dir))
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	fsys := fstest.MapFS{
+		"main.tex":          &fstest.MapFile{Data: []byte("x")},
+		"chapters/main.tex": &fstest.MapFile{Data: []byte("x")},
 	}
-	defer func() { _ = c.Close(ctx) }()
-
-	tex := []byte(`\documentclass{article}
-\begin{document}
-Hello
-\end{document}
-`)
 
 	cases := map[string]string{
-		"parent ref":           "../escape.txt",
-		"bare parent":          "..",
-		"normalized escape":    "sections/../../escape.txt",
-		"absolute path":        "/etc/passwd",
-		"reserved main source": "input.tex",
-		"reserved via dot":     "./input.tex",
+		"empty":            "",
+		"directory":        ".",
+		"subdir component": "chapters/main.tex",
+		"parent escape":    "../main.tex",
+		"absolute":         "/main.tex",
 	}
-	for label, key := range cases {
+	for label, name := range cases {
 		t.Run(label, func(t *testing.T) {
-			_, err := c.Compile(ctx, tex, WithInputFiles(map[string][]byte{
-				key: []byte("nope"),
-			}))
+			_, err := c.Compile(ctx, fsys, name)
 			if err == nil {
-				t.Fatalf("expected error for unsafe input file path %q, got nil", key)
+				t.Fatalf("expected error for invalid main name %q, got nil", name)
 			}
 		})
 	}
@@ -265,7 +176,7 @@ func TestCompileError(t *testing.T) {
 \end{document}
 `)
 
-	_, err = c.Compile(ctx, tex)
+	_, err = c.CompileSource(ctx, tex)
 	if err == nil {
 		t.Fatal("expected error for invalid TeX, got nil")
 	}
@@ -315,7 +226,7 @@ Hello
 \end{document}
 `)
 
-	_, err = c.Compile(ctx, tex)
+	_, err = c.CompileSource(ctx, tex)
 	if err == nil {
 		t.Fatal("expected error when no bundle dir set, got nil")
 	}
@@ -347,7 +258,7 @@ func TestCompileConcurrent(t *testing.T) {
 Concurrent document %d.
 \end{document}
 `, i))
-			pdfs[i], errs[i] = c.Compile(ctx, tex)
+			pdfs[i], errs[i] = c.CompileSource(ctx, tex)
 		}(i)
 	}
 	wg.Wait()
@@ -381,7 +292,7 @@ Hello
 \end{document}
 `)
 
-	_, err = c.Compile(ctx, tex)
+	_, err = c.CompileSource(ctx, tex)
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}

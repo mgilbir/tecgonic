@@ -7,12 +7,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
+	"strings"
 	"testing/fstest"
 
 	"github.com/mgilbir/tecgonic/wasm"
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
@@ -195,9 +196,24 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 	return nil
 }
 
-// Compile compiles the given LaTeX source to PDF.
+// Compile compiles the LaTeX document rooted at mainName within fsys to PDF.
+//
+// fsys is served to the WASM module as the compilation input root: mainName is
+// the primary source (e.g. "paper.tex") and every other file in fsys is
+// available to \input, \include, \includegraphics, \bibliography, and similar
+// references using the same slash-separated paths. fsys is passed to the WASM
+// module as-is and is never written to the host filesystem; any fs.FS works
+// (an embed.FS, os.DirFS, fstest.MapFS, ...).
+//
+// mainName must be a plain filename at the root of fsys (no directory
+// component) and must exist in fsys. The output PDF is named after it, so
+// "paper.tex" produces "paper.pdf".
+//
+// For a single, self-contained source with no auxiliary files, see
+// CompileSource.
+//
 // Each call creates an isolated WASM instance with its own filesystem.
-func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...CompileOption) ([]byte, error) {
+func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opts ...CompileOption) ([]byte, error) {
 	cfg := compileConfig{
 		bundleDir: c.config.defaultBundleDir,
 		fontsDir:  c.config.defaultFontsDir,
@@ -208,6 +224,17 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 
 	if cfg.bundleDir == "" {
 		return nil, fmt.Errorf("tecgonic: no bundle directory specified (use WithDefaultBundleDir or WithBundleDir)")
+	}
+	if fsys == nil {
+		return nil, fmt.Errorf("tecgonic: no input filesystem provided")
+	}
+	if err := validateMainName(mainName); err != nil {
+		return nil, err
+	}
+	if info, err := fs.Stat(fsys, mainName); err != nil {
+		return nil, fmt.Errorf("tecgonic: main source %q not found in input fs: %w", mainName, err)
+	} else if info.IsDir() {
+		return nil, fmt.Errorf("tecgonic: main source %q is a directory, not a file", mainName)
 	}
 
 	// Create isolated temp directories for this compilation
@@ -235,13 +262,6 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 		}
 	}
 
-	// Assemble the main source and any auxiliary inputs into an in-memory
-	// filesystem; the WASM module never sees host paths for its inputs.
-	inputFS, err := buildInputFS(texSource, cfg.inputFiles, cfg.inputFS)
-	if err != nil {
-		return nil, err
-	}
-
 	// Set up stderr capture
 	var stderrBuf bytes.Buffer
 	var stderrWriter io.Writer = &stderrBuf
@@ -249,9 +269,11 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 		stderrWriter = io.MultiWriter(&stderrBuf, cfg.stderr)
 	}
 
-	// Configure filesystem mounts
+	// Configure filesystem mounts. The caller's fs.FS is mounted directly as
+	// the input root; the WASM module reads it lazily and never touches the
+	// host filesystem for inputs.
 	fsConfig := wazero.NewFSConfig().
-		WithFSMount(inputFS, "/input").
+		WithFSMount(fsys, "/input").
 		WithDirMount(outputDir, "/output").
 		WithReadOnlyDirMount(cfg.bundleDir, "/bundle").
 		WithDirMount(fontsDir, "/fonts").
@@ -272,13 +294,9 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 	defer func() { _ = mod.Close(ctx) }()
 
-	// Call tectonic_compile_defaults
-	fn := mod.ExportedFunction("tectonic_compile_defaults")
-	if fn == nil {
-		return nil, fmt.Errorf("tecgonic: exported function tectonic_compile_defaults not found")
-	}
-
-	results, callErr := fn.Call(ctx)
+	// Compile with an explicit primary input path so the entry filename is
+	// caller-controlled rather than hardcoded in the WASM module.
+	exitCode, callErr := callTectonicCompile(ctx, mod, mainName, "/output", "/bundle")
 
 	// Handle WASM trap (callErr != nil)
 	if callErr != nil {
@@ -290,15 +308,16 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 
 	// Handle non-zero exit code
-	if len(results) > 0 && results[0] != 0 {
+	if exitCode != 0 {
 		return nil, &CompileError{
-			ExitCode: int32(results[0]),
+			ExitCode: exitCode,
 			Logs:     stderrBuf.String(),
 		}
 	}
 
-	// Read the output PDF
-	pdfPath := filepath.Join(outputDir, "input.pdf")
+	// Read the output PDF. The WASM module derives the output base name from
+	// the primary input's basename, mirroring tectonic's jobname behaviour.
+	pdfPath := filepath.Join(outputDir, strings.TrimSuffix(mainName, ".tex")+".pdf")
 
 	if cfg.output != nil {
 		f, err := os.Open(pdfPath)
@@ -320,76 +339,77 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	return pdfBytes, nil
 }
 
-// mainInputName is the filename of the main LaTeX source written into the
-// compilation input root. It is reserved: auxiliary input files may not use it.
-const mainInputName = "input.tex"
+// defaultMainName is the filename under which CompileSource serves its source
+// to the WASM module.
+const defaultMainName = "input.tex"
 
-// buildInputFS assembles the in-memory filesystem mounted read-only at /input
-// in the WASM module. It always contains the main source as input.tex, plus
-// any auxiliary files from WithInputFiles and a snapshot of any fs.FS from
-// WithInputFS. Inputs never touch the host filesystem.
+// CompileSource compiles a single, self-contained LaTeX source to PDF. It is a
+// convenience wrapper around Compile for documents with no auxiliary inputs:
+// the source is served to the WASM module as "input.tex".
 //
-// Map keys are treated as logical, slash-separated paths (matching LaTeX's
-// \input convention) and validated independently of the host OS: they must be
-// relative, must not escape the input root via "..", and must not collide with
-// the main source. Paths from the fs.FS are valid by construction (fs.ValidPath)
-// but are checked against the same collisions.
-func buildInputFS(texSource []byte, files map[string][]byte, fsys fs.FS) (fs.FS, error) {
-	m := fstest.MapFS{
-		mainInputName: &fstest.MapFile{Data: texSource, Mode: 0o644},
+// For multi-file documents (\input, \includegraphics, .bib, .cls, .sty, ...),
+// use Compile with an fs.FS.
+func (c *Compiler) CompileSource(ctx context.Context, texSource []byte, opts ...CompileOption) ([]byte, error) {
+	fsys := fstest.MapFS{
+		defaultMainName: &fstest.MapFile{Data: texSource, Mode: 0o644},
 	}
-
-	for name, data := range files {
-		clean, err := validateInputPath(name)
-		if err != nil {
-			return nil, err
-		}
-		m[clean] = &fstest.MapFile{Data: data, Mode: 0o644}
-	}
-
-	if fsys != nil {
-		err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return fmt.Errorf("tecgonic: walking input fs at %q: %w", p, err)
-			}
-			if d.IsDir() {
-				return nil
-			}
-			if p == mainInputName {
-				return fmt.Errorf("tecgonic: input fs path %q is reserved for the main source", p)
-			}
-			if _, exists := m[p]; exists {
-				return fmt.Errorf("tecgonic: input fs path %q collides with an input file", p)
-			}
-			data, err := fs.ReadFile(fsys, p)
-			if err != nil {
-				return fmt.Errorf("tecgonic: reading input fs file %q: %w", p, err)
-			}
-			m[p] = &fstest.MapFile{Data: data, Mode: 0o644}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return m, nil
+	return c.Compile(ctx, fsys, defaultMainName, opts...)
 }
 
-// validateInputPath normalizes a WithInputFiles key to its slash-separated
-// form and checks that the result is something the in-memory filesystem can
-// actually serve. Since inputs never touch the host filesystem, this is not a
-// security boundary: it exists to fail fast on keys that fs.FS semantics make
-// unreachable (absolute paths, escapes via "..", empty names) and on the
-// reserved main-source name, which would otherwise silently overwrite the
-// main document.
-func validateInputPath(name string) (string, error) {
-	clean := path.Clean(filepath.ToSlash(name))
-	if clean == "." || !fs.ValidPath(clean) {
-		return "", fmt.Errorf("tecgonic: invalid input file path %q", name)
+// validateMainName checks that name can serve as the primary source: a plain
+// filename at the root of the input fs. A directory component is rejected
+// because the WASM module writes the result as <basename>.pdf directly under
+// /output without creating intermediate directories there.
+func validateMainName(name string) error {
+	if name == "" {
+		return fmt.Errorf("tecgonic: empty main source name")
 	}
-	if clean == mainInputName {
-		return "", fmt.Errorf("tecgonic: input file path %q is reserved for the main source", name)
+	if !fs.ValidPath(name) || name == "." || strings.ContainsRune(name, '/') {
+		return fmt.Errorf("tecgonic: main source name %q must be a plain filename at the input root", name)
 	}
-	return clean, nil
+	return nil
+}
+
+// callTectonicCompile invokes the WASM tectonic_compile export. Its arguments
+// are (pointer, length) pairs into the module's linear memory, so each string
+// is allocated with the module's malloc, written into memory, and freed after
+// the call. It returns the engine's exit code (0 on success).
+func callTectonicCompile(ctx context.Context, mod api.Module, inputPath, outputDir, bundleDir string) (int32, error) {
+	fn := mod.ExportedFunction("tectonic_compile")
+	malloc := mod.ExportedFunction("malloc")
+	free := mod.ExportedFunction("free")
+	if fn == nil || malloc == nil || free == nil {
+		return 0, fmt.Errorf("tecgonic: WASM module is missing tectonic_compile/malloc/free exports")
+	}
+
+	args := make([]uint64, 0, 6)
+	var ptrs []uint64
+	defer func() {
+		for _, p := range ptrs {
+			_, _ = free.Call(ctx, p)
+		}
+	}()
+
+	for _, s := range []string{inputPath, outputDir, bundleDir} {
+		b := []byte(s)
+		res, err := malloc.Call(ctx, uint64(len(b)))
+		if err != nil {
+			return 0, fmt.Errorf("tecgonic: allocating guest memory: %w", err)
+		}
+		ptr := res[0]
+		ptrs = append(ptrs, ptr)
+		if !mod.Memory().Write(uint32(ptr), b) {
+			return 0, fmt.Errorf("tecgonic: writing %d bytes to guest memory at offset %d is out of range", len(b), ptr)
+		}
+		args = append(args, ptr, uint64(len(b)))
+	}
+
+	results, err := fn.Call(ctx, args...)
+	if err != nil {
+		return 0, err
+	}
+	if len(results) == 0 {
+		return 0, nil
+	}
+	return int32(uint32(results[0])), nil
 }

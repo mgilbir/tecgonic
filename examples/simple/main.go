@@ -73,7 +73,7 @@ func run(ctx context.Context, bundleDir, wasmCacheDir, output string) error {
 
 	// Step 4: Compile LaTeX to PDF.
 	fmt.Fprintln(os.Stderr, "Compiling LaTeX...")
-	pdf, err := compiler.Compile(ctx, texSource, tecgonic.WithStderr(os.Stderr))
+	pdf, err := compiler.CompileSource(ctx, texSource, tecgonic.WithStderr(os.Stderr))
 	if err != nil {
 		return fmt.Errorf("compiling: %w", err)
 	}

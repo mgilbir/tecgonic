@@ -38,7 +38,7 @@ func main() {
 	compiler.GenerateFormat(ctx, bundleDir)
 
 	// Compile LaTeX to PDF.
-	pdf, _ := compiler.Compile(ctx, []byte(`\documentclass{article}
+	pdf, _ := compiler.CompileSource(ctx, []byte(`\documentclass{article}
 \begin{document}
 Hello, World!
 \end{document}
@@ -51,41 +51,36 @@ See [examples/simple](examples/simple) for a complete runnable example.
 
 ## Multi-file documents
 
-Auxiliary files can be provided alongside the main `.tex` source for
-documents that rely on `\input`, `\include`, `\includegraphics`, `.bib`,
-`.cls`, or `.sty` files. All inputs are served to the WASM module from an
-in-memory filesystem; they are never written to the host filesystem.
-
-Use `WithInputFiles` to pass files as in-memory bytes. Paths must be
-relative and stay within the compilation input root.
+For documents that rely on `\input`, `\include`, `\includegraphics`, `.bib`,
+`.cls`, or `.sty` files, use `Compile` with an `fs.FS`. The filesystem is
+served to the WASM module as the compilation input root — every file in it is
+available under its own path — and the second argument names the primary
+source within it. Any `fs.FS` works (an `embed.FS`, `os.DirFS`,
+`fstest.MapFS`, ...); it is passed to the WASM module as-is and never written
+to the host filesystem.
 
 ```go
-pdf, err := compiler.Compile(ctx, []byte(`\documentclass{article}
-\usepackage{graphicx}
+//go:embed paper
+var paper embed.FS
+
+fsys, _ := fs.Sub(paper, "paper") // contains paper.tex, sections/, images/, refs.bib
+pdf, err := compiler.Compile(ctx, fsys, "paper.tex")
+```
+
+The main source must be a plain filename at the root of the filesystem (no
+directory component) and must exist in it. The output PDF is named after it,
+so `paper.tex` produces `paper.pdf`.
+
+`CompileSource` is a convenience wrapper for a single, self-contained source
+with no auxiliary files:
+
+```go
+pdf, err := compiler.CompileSource(ctx, []byte(`\documentclass{article}
 \begin{document}
-\input{sections/intro.tex}
-\includegraphics{images/logo.png}
+Hello, World!
 \end{document}
-`), tecgonic.WithInputFiles(map[string][]byte{
-	"sections/intro.tex": []byte("Hello from an auxiliary file."),
-	"images/logo.png":    logoPNG,
-}))
+`))
 ```
-
-Use `WithInputFS` to pass any `fs.FS` (an `embed.FS`, `os.DirFS`,
-`fstest.MapFS`, ...). The filesystem is snapshotted into memory when
-`Compile` is called.
-
-```go
-//go:embed assets
-var assets embed.FS
-
-fsys, _ := fs.Sub(assets, "assets")
-pdf, err := compiler.Compile(ctx, mainTex, tecgonic.WithInputFS(fsys))
-```
-
-Both options may be combined; a path present in both is an error, as is the
-reserved main-source name `input.tex`.
 
 ## WASM compilation cache
 
