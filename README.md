@@ -107,10 +107,17 @@ The cache directory can be shared across processes. The first invocation populat
 The pre-built WASM artifact is included under `wasm/`. To rebuild it from the Tectonic source:
 
 ```bash
-make wasm
+make build-wasm
 ```
 
-This uses Docker to cross-compile Tectonic to `wasm32-wasip1`. See the [Dockerfile](Dockerfile) for details.
+This uses Docker to cross-compile Tectonic to `wasm32-wasip1`. The build is pinned
+to a specific commit of the [Tectonic fork](https://github.com/mgilbir/tectonic)'s
+`wasm` branch (`ARG TECTONIC_COMMIT` in the [Dockerfile](Dockerfile)). To check
+whether that branch has moved past the pinned commit:
+
+```bash
+make check-wasm-update
+```
 
 ## Thanks
 

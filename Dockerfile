@@ -32,7 +32,13 @@ RUN rustup target add wasm32-wasip1
 # Stage 2: Clone source
 FROM toolchain AS source
 
-RUN git clone --branch wasm --recursive https://github.com/mgilbir/tectonic.git /src/tectonic
+# Pinned to a specific commit on the fork's wasm branch for reproducible builds.
+# Run `make check-wasm-update` to see whether the branch has advanced, then bump
+# this value and rebuild.
+ARG TECTONIC_COMMIT=f602f8556d4fc25fa2dbb8e07a24e9f25e7b9f7d
+RUN git clone https://github.com/mgilbir/tectonic.git /src/tectonic \
+    && git -C /src/tectonic checkout "${TECTONIC_COMMIT}" \
+    && git -C /src/tectonic submodule update --init --recursive
 
 WORKDIR /src/tectonic
 
