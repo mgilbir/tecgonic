@@ -126,8 +126,9 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 		stderrWriter = io.MultiWriter(&stderrBuf, fmtCfg.stderr)
 	}
 
+	// Format generation reads only the bundle and writes to the cache; it never
+	// touches /input, so no input filesystem is mounted here.
 	fsConfig := wazero.NewFSConfig().
-		WithFSMount(fstest.MapFS{}, "/input").
 		WithDirMount(outputDir, "/output").
 		WithReadOnlyDirMount(bundleDir, "/bundle").
 		WithDirMount(fontsDir, "/fonts").
