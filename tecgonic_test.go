@@ -107,6 +107,37 @@ func TestCompileWithInputFS(t *testing.T) {
 	}
 }
 
+func TestCompileMainInSubdir(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	// The main source lives in a subdirectory; an \input alongside it is
+	// referenced relative to the main source's own directory. The output PDF
+	// name is derived from the basename, so this resolves to "paper.pdf".
+	fsys := fstest.MapFS{
+		"src/paper.tex": &fstest.MapFile{Data: []byte(`\documentclass{article}
+\begin{document}
+\input{body.tex}
+\end{document}
+`)},
+		"src/body.tex": &fstest.MapFile{Data: []byte("Main source in a subdirectory.\n")},
+	}
+
+	pdf, err := c.Compile(ctx, fsys, "src/paper.tex")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("output is not a PDF")
+	}
+}
+
 func TestCompileRejectsMissingMain(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()
@@ -138,16 +169,19 @@ func TestCompileRejectsInvalidMainName(t *testing.T) {
 	defer func() { _ = c.Close(ctx) }()
 
 	fsys := fstest.MapFS{
-		"main.tex":          &fstest.MapFile{Data: []byte("x")},
-		"chapters/main.tex": &fstest.MapFile{Data: []byte("x")},
+		"main.tex": &fstest.MapFile{Data: []byte("x")},
 	}
 
+	// The main name is rejected purely because it does not resolve to a file in
+	// fsys: an empty name and invalid fs paths (parent escapes, absolute paths)
+	// fail fs.Stat, and "." resolves to the root directory. Path validity is the
+	// fsys provider's responsibility, so a subdirectory component (e.g.
+	// "chapters/main.tex") is now allowed.
 	cases := map[string]string{
-		"empty":            "",
-		"directory":        ".",
-		"subdir component": "chapters/main.tex",
-		"parent escape":    "../main.tex",
-		"absolute":         "/main.tex",
+		"empty":         "",
+		"directory":     ".",
+		"parent escape": "../main.tex",
+		"absolute":      "/main.tex",
 	}
 	for label, name := range cases {
 		t.Run(label, func(t *testing.T) {

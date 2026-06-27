@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing/fstest"
@@ -201,13 +202,22 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 // fsys is served to the WASM module as the compilation input root: mainName is
 // the primary source (e.g. "paper.tex") and every other file in fsys is
 // available to \input, \include, \includegraphics, \bibliography, and similar
-// references using the same slash-separated paths. fsys is passed to the WASM
-// module as-is and is never written to the host filesystem; any fs.FS works
-// (an embed.FS, os.DirFS, fstest.MapFS, ...).
+// references. fsys is passed to the WASM module as-is and is never written to
+// the host filesystem; any fs.FS works (an embed.FS, os.DirFS, fstest.MapFS,
+// ...).
 //
-// mainName must be a plain filename at the root of fsys (no directory
-// component) and must exist in fsys. The output PDF is named after it, so
-// "paper.tex" produces "paper.pdf".
+// mainName is a slash-separated path into fsys (e.g. "paper.tex" or
+// "src/paper.tex") and must exist in fsys; validity of the path is the
+// responsibility of the fsys provider. The output PDF is named after its
+// basename, so both "paper.tex" and "src/paper.tex" produce "paper.pdf".
+//
+// References inside the document resolve relative to the main source's own
+// directory, mirroring how a TeX engine treats the file you hand it. If the
+// main source is at the fsys root (e.g. "paper.tex"), \input{sections/intro}
+// reads "sections/intro.tex". If the main source is "src/paper.tex", the same
+// \input{sections/intro} reads "src/sections/intro.tex" — not "sections/intro"
+// at the root. Reach files in ancestor directories with relative paths such as
+// \input{../shared/macros}.
 //
 // For a single, self-contained source with no auxiliary files, see
 // CompileSource.
@@ -227,9 +237,6 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 	}
 	if fsys == nil {
 		return nil, fmt.Errorf("tecgonic: no input filesystem provided")
-	}
-	if err := validateMainName(mainName); err != nil {
-		return nil, err
 	}
 	if info, err := fs.Stat(fsys, mainName); err != nil {
 		return nil, fmt.Errorf("tecgonic: main source %q not found in input fs: %w", mainName, err)
@@ -295,8 +302,14 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 	defer func() { _ = mod.Close(ctx) }()
 
 	// Compile with an explicit primary input path so the entry filename is
-	// caller-controlled rather than hardcoded in the WASM module.
-	exitCode, callErr := callTectonicCompile(ctx, mod, mainName, "/output", "/bundle")
+	// caller-controlled rather than hardcoded in the WASM module. The path is
+	// made absolute under the /input mount so the engine splits it into a
+	// directory and a basename: the output PDF is named after the basename
+	// (paper.tex -> paper.pdf) and relative \input/\includegraphics references
+	// resolve against the main source's own directory. A bare relative path
+	// would fold any subdirectory into the output base name and never match the
+	// engine's jobname.
+	exitCode, callErr := callTectonicCompile(ctx, mod, path.Join("/input", mainName), "/output", "/bundle")
 
 	// Handle WASM trap (callErr != nil)
 	if callErr != nil {
@@ -316,8 +329,10 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 	}
 
 	// Read the output PDF. The WASM module derives the output base name from
-	// the primary input's basename, mirroring tectonic's jobname behaviour.
-	pdfPath := filepath.Join(outputDir, strings.TrimSuffix(mainName, ".tex")+".pdf")
+	// the primary input's basename, mirroring tectonic's jobname behaviour, and
+	// writes it flat under /output regardless of any subdirectory in mainName.
+	pdfName := strings.TrimSuffix(path.Base(mainName), ".tex") + ".pdf"
+	pdfPath := filepath.Join(outputDir, pdfName)
 
 	if cfg.output != nil {
 		f, err := os.Open(pdfPath)
@@ -339,10 +354,6 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 	return pdfBytes, nil
 }
 
-// defaultMainName is the filename under which CompileSource serves its source
-// to the WASM module.
-const defaultMainName = "input.tex"
-
 // CompileSource compiles a single, self-contained LaTeX source to PDF. It is a
 // convenience wrapper around Compile for documents with no auxiliary inputs:
 // the source is served to the WASM module as "input.tex".
@@ -350,24 +361,11 @@ const defaultMainName = "input.tex"
 // For multi-file documents (\input, \includegraphics, .bib, .cls, .sty, ...),
 // use Compile with an fs.FS.
 func (c *Compiler) CompileSource(ctx context.Context, texSource []byte, opts ...CompileOption) ([]byte, error) {
+	const mainName = "input.tex"
 	fsys := fstest.MapFS{
-		defaultMainName: &fstest.MapFile{Data: texSource, Mode: 0o644},
+		mainName: &fstest.MapFile{Data: texSource, Mode: 0o644},
 	}
-	return c.Compile(ctx, fsys, defaultMainName, opts...)
-}
-
-// validateMainName checks that name can serve as the primary source: a plain
-// filename at the root of the input fs. A directory component is rejected
-// because the WASM module writes the result as <basename>.pdf directly under
-// /output without creating intermediate directories there.
-func validateMainName(name string) error {
-	if name == "" {
-		return fmt.Errorf("tecgonic: empty main source name")
-	}
-	if !fs.ValidPath(name) || name == "." || strings.ContainsRune(name, '/') {
-		return fmt.Errorf("tecgonic: main source name %q must be a plain filename at the input root", name)
-	}
-	return nil
+	return c.Compile(ctx, fsys, mainName, opts...)
 }
 
 // callTectonicCompile invokes the WASM tectonic_compile export. Its arguments

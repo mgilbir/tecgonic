@@ -67,9 +67,18 @@ fsys, _ := fs.Sub(paper, "paper") // contains paper.tex, sections/, images/, ref
 pdf, err := compiler.Compile(ctx, fsys, "paper.tex")
 ```
 
-The main source must be a plain filename at the root of the filesystem (no
-directory component) and must exist in it. The output PDF is named after it,
-so `paper.tex` produces `paper.pdf`.
+The main source is a slash-separated path into the filesystem (`paper.tex` or
+`src/paper.tex`) and must exist in it; keeping the path valid is the
+filesystem's responsibility. The output PDF is named after its basename, so
+both `paper.tex` and `src/paper.tex` produce `paper.pdf`.
+
+References inside the document (`\input`, `\includegraphics`, `\bibliography`,
+…) resolve **relative to the main source's own directory**, just as a TeX
+engine treats the file you hand it. With a main source at the root,
+`\input{sections/intro}` reads `sections/intro.tex`; with the main source at
+`src/paper.tex`, the same `\input{sections/intro}` reads
+`src/sections/intro.tex`. Use relative paths like `\input{../shared/macros}` to
+reach files in ancestor directories.
 
 `CompileSource` is a convenience wrapper for a single, self-contained source
 with no auxiliary files:
