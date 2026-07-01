@@ -105,6 +105,44 @@ TECGONIC_BUNDLE_DIR=/path/to/bundle TECGONIC_BENCH_ROWS=100 \
 	go test -run '^$' -bench BenchmarkCompileLongtblr -benchtime=1x .
 ```
 
+## TeX passes and WithMaxPasses
+
+Tectonic reruns TeX until the document's cross-reference data (`.aux`)
+converges, up to 6 passes. Since modern LaTeX always records feedback data in
+the aux file (e.g. the total page count), every document compiles with at
+least 2 full passes — each pass repeats the entire cost of the document.
+
+If your documents don't use cross-references, citations, tables of contents,
+or "page X of Y" counters, you can skip rerun detection and roughly halve
+compilation time:
+
+```go
+pdf, err := compiler.Compile(ctx, tex, tecgonic.WithMaxPasses(1))
+```
+
+Measured on the 40-row `longtblr` benchmark document (M1 Pro): 17.4 s default
+vs 9.0 s with `WithMaxPasses(1)`, with byte-identical output. Documents that
+do need extra passes will render stale or missing references (`??`) when
+capped too low, so this is per-call and opt-in.
+
+If you can't know upfront whether a document needs multiple passes, use
+`WithStateDir` instead: it persists the feedback files (`.aux`, `.toc`, …)
+across `Compile` calls, so the first pass of the next compile starts from the
+previous run's data. When the document's feedback is unchanged, the engine
+proves convergence after a single pass and skips the rerun — same ~2× speedup
+as `WithMaxPasses(1)`, but the multi-pass safety net stays in place: a stale
+seed just triggers the usual reruns, never wrong output.
+
+```go
+// One state directory per logical document.
+pdf, err := compiler.Compile(ctx, tex, tecgonic.WithStateDir(stateDir))
+```
+
+```bash
+TECGONIC_BUNDLE_DIR=/path/to/bundle \
+	go test -run '^$' -bench 'BenchmarkCompileLongtblr/cancellation_off|BenchmarkCompileSinglePass|BenchmarkCompileWarmAux' -benchtime=3x .
+```
+
 ## Building the WASM module
 
 The pre-built WASM artifact is included under `wasm/`. To rebuild it from the Tectonic source:

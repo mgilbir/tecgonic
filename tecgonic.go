@@ -7,11 +7,19 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/mgilbir/tecgonic/wasm"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
+
+// stateFileNames are the TeX feedback files round-tripped by WithStateDir.
+// The WASM module exports them to the output directory after a successful
+// compile; Compile seeds them back into the input directory on the next run.
+var stateFileNames = []string{
+	"input.aux", "input.toc", "input.lof", "input.lot", "input.out", "input.bbl",
+}
 
 // Compiler compiles LaTeX documents to PDF using the Tectonic engine via WASM.
 // It is safe for concurrent use; each Compile call gets its own WASM instance.
@@ -244,6 +252,20 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 		return nil, fmt.Errorf("tecgonic: writing input.tex: %w", err)
 	}
 
+	// Seed feedback state files from a previous compile of this document so
+	// the engine can converge in a single pass (see WithStateDir).
+	if cfg.stateDir != "" {
+		for _, name := range stateFileNames {
+			data, err := os.ReadFile(filepath.Join(cfg.stateDir, name))
+			if err != nil {
+				continue
+			}
+			if err := os.WriteFile(filepath.Join(inputDir, name), data, 0o644); err != nil {
+				return nil, fmt.Errorf("tecgonic: seeding state file %s: %w", name, err)
+			}
+		}
+	}
+
 	// Set up stderr capture
 	var stderrBuf bytes.Buffer
 	var stderrWriter io.Writer = &stderrBuf
@@ -266,6 +288,10 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 		WithFSConfig(fsConfig).
 		WithEnv("TECTONIC_FONT_DIR", "/fonts").
 		WithEnv("TECTONIC_CACHE_DIR", "/cache")
+
+	if cfg.maxPasses > 0 {
+		modConfig = modConfig.WithEnv("TECTONIC_MAX_PASSES", strconv.Itoa(cfg.maxPasses))
+	}
 
 	// Instantiate a fresh module for this compilation
 	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, modConfig)
@@ -296,6 +322,21 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 		return nil, &CompileError{
 			ExitCode: int32(results[0]),
 			Logs:     stderrBuf.String(),
+		}
+	}
+
+	// Harvest feedback state files for the next compile (see WithStateDir).
+	// Missing files (older WASM modules, or documents that produce none) are
+	// skipped; state persistence failures are not fatal to the compilation.
+	if cfg.stateDir != "" {
+		if err := os.MkdirAll(cfg.stateDir, 0o755); err == nil {
+			for _, name := range stateFileNames {
+				data, err := os.ReadFile(filepath.Join(outputDir, name))
+				if err != nil {
+					continue
+				}
+				_ = os.WriteFile(filepath.Join(cfg.stateDir, name), data, 0o644)
+			}
 		}
 	}
 
