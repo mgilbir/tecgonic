@@ -69,3 +69,95 @@ func BenchmarkCompileLongtblr(b *testing.B) {
 	// the compiled code, which is dramatically slower on CPU-heavy documents.
 	b.Run("cancellation_on", func(b *testing.B) { run(b, WithContextCancellation()) })
 }
+
+// BenchmarkCompileSinglePass measures the same longtblr document compiled with
+// WithMaxPasses(1), which skips TeX rerun convergence. For documents that need
+// no cross-reference resolution this roughly halves compilation time.
+func BenchmarkCompileSinglePass(b *testing.B) {
+	dir := bundleDir(b)
+	ctx := context.Background()
+
+	rows := 40
+	if v := os.Getenv("TECGONIC_BENCH_ROWS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rows = n
+		}
+	}
+	doc := longtblrDoc(rows)
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := c.Compile(ctx, doc, WithMaxPasses(1)); err != nil {
+			b.Fatalf("Compile: %v", err)
+		}
+	}
+}
+
+// BenchmarkCompileWarmAux measures the longtblr document compiled with
+// WithStateDir after an initial seeding compile. When the document's feedback
+// data is stable, the seeded aux lets the engine converge after a single
+// pass — the multi-pass safety net stays in place, unlike WithMaxPasses(1).
+func BenchmarkCompileWarmAux(b *testing.B) {
+	dir := bundleDir(b)
+	ctx := context.Background()
+
+	rows := 40
+	if v := os.Getenv("TECGONIC_BENCH_ROWS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rows = n
+		}
+	}
+	doc := longtblrDoc(rows)
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	stateDir := b.TempDir()
+	// Seed the state with one cold compile outside the timer.
+	if _, err := c.Compile(ctx, doc, WithStateDir(stateDir)); err != nil {
+		b.Fatalf("Compile (seed): %v", err)
+	}
+
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := c.Compile(ctx, doc, WithStateDir(stateDir)); err != nil {
+			b.Fatalf("Compile: %v", err)
+		}
+	}
+}
+
+// BenchmarkCompileSimple measures a trivial document, capturing the fixed
+// per-compile cost (module instantiation, format load, filesystem setup)
+// rather than macro-expansion throughput.
+func BenchmarkCompileSimple(b *testing.B) {
+	dir := bundleDir(b)
+	ctx := context.Background()
+
+	doc := []byte(`\documentclass{article}
+\begin{document}
+Hello, World!
+\end{document}
+`)
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := c.Compile(ctx, doc); err != nil {
+			b.Fatalf("Compile: %v", err)
+		}
+	}
+}

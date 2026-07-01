@@ -190,6 +190,171 @@ Concurrent document %d.
 	}
 }
 
+func TestCompileMaxPasses(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	// A document with a label would normally trigger a second TeX pass.
+	tex := []byte(`\documentclass{article}
+\begin{document}
+\section{One}\label{sec:one}
+Hello.
+\end{document}
+`)
+
+	var stderr bytes.Buffer
+	pdf, err := c.Compile(ctx, tex, WithMaxPasses(1), WithStderr(&stderr))
+	if err != nil {
+		t.Fatalf("Compile: %v\nstderr: %s", err, stderr.String())
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatal("output is not a PDF")
+	}
+	if bytes.Contains(stderr.Bytes(), []byte("running TeX pass 2")) {
+		t.Error("WithMaxPasses(1) did not prevent a second TeX pass")
+	}
+}
+
+// TestCompileForwardRef is a regression test for the in-memory filesystem
+// truncation bug: opening an output file preloaded the previous pass's bytes,
+// so a rerun that shrank an intermediate (e.g. the .xdv once `??` is replaced
+// by a resolved reference) left stale tail bytes behind and crashed
+// xdvipdfmx. Any document with a forward reference used to trap here.
+func TestCompileForwardRef(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}
+\begin{document}
+See section \ref{sec:later} for details.
+\section{Later}\label{sec:later}
+Content.
+\end{document}
+`)
+
+	var stderr bytes.Buffer
+	pdf, err := c.Compile(ctx, tex, WithStderr(&stderr))
+	if err != nil {
+		t.Fatalf("Compile: %v\nstderr: %s", err, stderr.String())
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatal("output is not a PDF")
+	}
+}
+
+func TestCompileStateDir(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	// A forward reference forces a second pass on a cold compile.
+	tex := []byte(`\documentclass{article}
+\begin{document}
+See section \ref{sec:later} for details.
+\section{Later}\label{sec:later}
+Content.
+\end{document}
+`)
+
+	stateDir := t.TempDir()
+
+	var stderr1 bytes.Buffer
+	pdf1, err := c.Compile(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr1))
+	if err != nil {
+		t.Fatalf("Compile (cold): %v\nstderr: %s", err, stderr1.String())
+	}
+	if !bytes.Contains(stderr1.Bytes(), []byte("running TeX pass 2")) {
+		t.Errorf("cold compile should need a second pass, stderr: %s", stderr1.String())
+	}
+	if _, err := os.Stat(stateDir + "/input.aux"); err != nil {
+		t.Fatalf("state dir has no input.aux after cold compile: %v", err)
+	}
+
+	var stderr2 bytes.Buffer
+	pdf2, err := c.Compile(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr2))
+	if err != nil {
+		t.Fatalf("Compile (warm): %v\nstderr: %s", err, stderr2.String())
+	}
+	if bytes.Contains(stderr2.Bytes(), []byte("running TeX pass 2")) {
+		t.Errorf("warm compile should converge in one pass, stderr: %s", stderr2.String())
+	}
+	if !bytes.Equal(pdf1, pdf2) {
+		t.Error("warm compile produced different PDF than cold converged compile")
+	}
+}
+
+// TestCompileStateDirStaleSeed verifies the safety property of WithStateDir:
+// state left over from a previous version of the document must never change
+// the output — a stale seed only costs extra passes.
+func TestCompileStateDirStaleSeed(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	doc := func(sections string) []byte {
+		return []byte(`\documentclass{article}
+\begin{document}
+See section \ref{sec:later} for details.
+` + sections + `\section{Later}\label{sec:later}
+Content.
+\end{document}
+`)
+	}
+	// v2 inserts a section before the label, so v1's recorded reference
+	// data ("section 1") is stale for v2 (where it must resolve to 2).
+	v1 := doc("")
+	v2 := doc("\\section{Earlier}\n")
+
+	stateDir := t.TempDir()
+
+	// Populate the state dir with v1's feedback data.
+	if _, err := c.Compile(ctx, v1, WithStateDir(stateDir)); err != nil {
+		t.Fatalf("Compile (v1): %v", err)
+	}
+
+	// Ground truth: v2 compiled cold, no state involved.
+	want, err := c.Compile(ctx, v2)
+	if err != nil {
+		t.Fatalf("Compile (v2 cold): %v", err)
+	}
+
+	// v2 compiled against v1's stale state must produce identical output.
+	var stderr bytes.Buffer
+	got, err := c.Compile(ctx, v2, WithStateDir(stateDir), WithStderr(&stderr))
+	if err != nil {
+		t.Fatalf("Compile (v2 stale seed): %v\nstderr: %s", err, stderr.String())
+	}
+	if !bytes.Equal(want, got) {
+		t.Error("stale seed changed the compiled output")
+	}
+	// The stale seed must have been detected, forcing a rerun.
+	if !bytes.Contains(stderr.Bytes(), []byte("running TeX pass 2")) {
+		t.Errorf("expected a rerun with a stale seed, stderr: %s", stderr.String())
+	}
+}
+
 func TestCompileContextCancel(t *testing.T) {
 	dir := bundleDir(t)
 
