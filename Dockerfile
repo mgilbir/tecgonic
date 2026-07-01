@@ -35,7 +35,7 @@ FROM toolchain AS source
 # Pinned to a specific commit on the fork's wasm branch for reproducible builds.
 # Run `make check-wasm-update` to see whether the branch has advanced, then bump
 # this value and rebuild.
-ARG TECTONIC_COMMIT=f602f8556d4fc25fa2dbb8e07a24e9f25e7b9f7d
+ARG TECTONIC_COMMIT=dce83e6e85643e9faebb851251f980a858f72795
 RUN git clone https://github.com/mgilbir/tectonic.git /src/tectonic \
     && git -C /src/tectonic checkout "${TECTONIC_COMMIT}" \
     && git -C /src/tectonic submodule update --init --recursive

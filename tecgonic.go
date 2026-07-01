@@ -3,12 +3,14 @@ package tecgonic
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing/fstest"
 
@@ -17,6 +19,12 @@ import (
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
+
+// stateFileExts are the extensions of the TeX feedback files round-tripped by
+// WithStateDir. The WASM module exports them (named after the main source's
+// basename) to the output directory after a successful compile; Compile
+// overlays them onto the input filesystem on the next run.
+var stateFileExts = []string{".aux", ".toc", ".lof", ".lot", ".out", ".bbl"}
 
 // Compiler compiles LaTeX documents to PDF using the Tectonic engine via WASM.
 // It is safe for concurrent use; each Compile call gets its own WASM instance.
@@ -35,7 +43,11 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 		o(&cfg)
 	}
 
-	rtConfig := wazero.NewRuntimeConfig().WithCloseOnContextDone(true)
+	// WithCloseOnContextDone makes running compilations interruptible via the
+	// context, but it forces wazero to insert termination checks on every loop
+	// and call, which is ~5x slower on CPU-heavy documents. It is therefore
+	// opt-in via WithContextCancellation().
+	rtConfig := wazero.NewRuntimeConfig().WithCloseOnContextDone(cfg.contextCancellation)
 
 	var cache wazero.CompilationCache
 	if cfg.compilationCacheDir != "" {
@@ -270,6 +282,30 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 		}
 	}
 
+	// Seed feedback state files from a previous compile of this document so
+	// the engine can converge in a single pass (see WithStateDir). The input
+	// filesystem is read-only and caller-owned, so the state files are served
+	// through an overlay next to the main source rather than written anywhere;
+	// files present in the caller's filesystem always win.
+	docBase := strings.TrimSuffix(path.Base(mainName), ".tex")
+	if cfg.stateDir != "" {
+		overlay := fstest.MapFS{}
+		for _, ext := range stateFileExts {
+			data, err := os.ReadFile(filepath.Join(cfg.stateDir, docBase+ext))
+			if err != nil {
+				continue
+			}
+			name := docBase + ext
+			if dir := path.Dir(mainName); dir != "." {
+				name = path.Join(dir, name)
+			}
+			overlay[name] = &fstest.MapFile{Data: data, Mode: 0o644}
+		}
+		if len(overlay) > 0 {
+			fsys = &overlayFS{base: fsys, overlay: overlay}
+		}
+	}
+
 	// Set up stderr capture
 	var stderrBuf bytes.Buffer
 	var stderrWriter io.Writer = &stderrBuf
@@ -294,6 +330,10 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 		WithFSConfig(fsConfig).
 		WithEnv("TECTONIC_FONT_DIR", "/fonts").
 		WithEnv("TECTONIC_CACHE_DIR", "/cache")
+
+	if cfg.maxPasses > 0 {
+		modConfig = modConfig.WithEnv("TECTONIC_MAX_PASSES", strconv.Itoa(cfg.maxPasses))
+	}
 
 	// Instantiate a fresh module for this compilation
 	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, modConfig)
@@ -329,11 +369,26 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 		}
 	}
 
+	// Harvest feedback state files for the next compile (see WithStateDir).
+	// The WASM module exports them flat under /output, named after the main
+	// source's basename. Missing files (documents that produce none) are
+	// skipped; state persistence failures are not fatal to the compilation.
+	if cfg.stateDir != "" {
+		if err := os.MkdirAll(cfg.stateDir, 0o755); err == nil {
+			for _, ext := range stateFileExts {
+				data, err := os.ReadFile(filepath.Join(outputDir, docBase+ext))
+				if err != nil {
+					continue
+				}
+				_ = os.WriteFile(filepath.Join(cfg.stateDir, docBase+ext), data, 0o644)
+			}
+		}
+	}
+
 	// Read the output PDF. The WASM module derives the output base name from
 	// the primary input's basename, mirroring tectonic's jobname behaviour, and
 	// writes it flat under /output regardless of any subdirectory in mainName.
-	pdfName := strings.TrimSuffix(path.Base(mainName), ".tex") + ".pdf"
-	pdfPath := filepath.Join(outputDir, pdfName)
+	pdfPath := filepath.Join(outputDir, docBase+".pdf")
 
 	if cfg.output != nil {
 		f, err := os.Open(pdfPath)
@@ -367,6 +422,26 @@ func (c *Compiler) CompileSource(ctx context.Context, texSource []byte, opts ...
 		mainName: &fstest.MapFile{Data: texSource, Mode: 0o644},
 	}
 	return c.Compile(ctx, fsys, mainName, opts...)
+}
+
+// overlayFS serves seeded state files (see WithStateDir) alongside the
+// caller's input filesystem. The base filesystem always wins: overlay entries
+// are only consulted when the base reports the file as absent, so a caller
+// who ships their own .aux keeps full control.
+type overlayFS struct {
+	base    fs.FS
+	overlay fstest.MapFS
+}
+
+func (o *overlayFS) Open(name string) (fs.File, error) {
+	f, err := o.base.Open(name)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return f, err
+	}
+	if _, ok := o.overlay[name]; ok {
+		return o.overlay.Open(name)
+	}
+	return nil, err
 }
 
 // callTectonicCompile invokes the WASM tectonic_compile export. Its arguments
