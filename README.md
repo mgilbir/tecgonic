@@ -185,6 +185,35 @@ TECGONIC_BUNDLE_DIR=/path/to/bundle \
 	go test -run '^$' -bench 'BenchmarkCompileLongtblr/cancellation_off|BenchmarkCompileSinglePass|BenchmarkCompileWarmAux' -benchtime=3x .
 ```
 
+## WASM engine: andsifr (a wazero fork)
+
+The WASM engine is [andsifr](https://github.com/mgilbir/andsifr), a fork of
+[wazero](https://github.com/tetratelabs/wazero) with its own module path. It
+carries compiler optimizations that target exactly tecgonic's workload — an
+interpreter-style module whose state lives in globals at constant addresses:
+
+- **Bounds-check elision for statically safe addresses**: accesses at
+  constant addresses within the memory's declared minimum size can never be
+  out of bounds (memories only grow), so no runtime check is emitted.
+- **Shared trap islands** (arm64 and amd64): conditional traps branch to one
+  shared per-function exit sequence and fall through on the hot path, instead
+  of inlining ~10 instructions at every check site.
+
+Measured on the 40-row `longtblr` benchmark document:
+
+| CPU | stock wazero v1.12.0 | andsifr |
+| --- | --- | --- |
+| Apple M1 Pro | 16.4 s | **9.8 s (1.7x)** |
+| Intel i7-3770 | 38.8 s | **19.3 s (2.0x)** |
+
+Generated machine code for the module also shrinks from 18.2 MB to 10.8 MB.
+The full wazero test suite and the WebAssembly spec tests pass on the fork on
+both linux/amd64 and darwin/arm64.
+
+Because andsifr is an ordinary dependency (not a `replace` directive),
+applications importing tecgonic as a library get it automatically — no
+changes to your `go.mod` are needed.
+
 ## Building the WASM module
 
 The pre-built WASM artifact is included under `wasm/`. To rebuild it from the Tectonic source:
