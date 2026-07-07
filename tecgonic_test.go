@@ -646,6 +646,38 @@ func TestCompileRejectsInvalidMainName(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsNonTexMain checks that a main source whose basename carries
+// an extension other than .tex is rejected at the API boundary, rather than
+// running the engine and failing late with "no PDF output was generated" from a
+// jobname/output-name disagreement (audit C5).
+func TestCompileRejectsNonTexMain(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	for _, name := range []string{"paper.ltx", "PAPER.TEX", "src/paper.latex", "doc.Tex"} {
+		t.Run(name, func(t *testing.T) {
+			fsys := fstest.MapFS{name: &fstest.MapFile{Data: []byte("x")}}
+			_, err := c.Compile(ctx, fsys, name)
+			if err == nil {
+				t.Fatalf("expected rejection of non-.tex main %q, got nil", name)
+			}
+			if !strings.Contains(err.Error(), ".tex") {
+				t.Errorf("error does not mention the .tex constraint: %v", err)
+			}
+			var eng *EngineError
+			if errors.As(err, &eng) {
+				t.Errorf("boundary rejection surfaced as *EngineError: %v", err)
+			}
+		})
+	}
+}
+
 // TestCompileStateDirWithInputFS covers WithStateDir on a multi-file fs.FS with
 // the main source in a subdirectory: state files are named after the main
 // source's basename and overlaid next to it, without touching the caller's fs.

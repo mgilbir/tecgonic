@@ -287,7 +287,11 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 // ...). For a single, self-contained source, see CompileSource.
 //
 // mainName is a slash-separated path into fsys (e.g. "paper.tex" or
-// "src/paper.tex") and must exist in fsys. References inside the document
+// "src/paper.tex") and must exist in fsys. Its basename must use the ".tex"
+// extension or none ("paper.tex" or "paper"); any other extension is rejected,
+// because the engine derives the jobname from the file stem while tecgonic keys
+// the output PDF and state files off the ".tex"-stripped basename, and the two
+// agree only for those two forms (audit C5). References inside the document
 // resolve relative to the main source's own directory, mirroring how a TeX
 // engine treats the file you hand it. The output PDF is named after the
 // basename, so both "paper.tex" and "src/paper.tex" produce "paper.pdf".
@@ -306,6 +310,13 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 	}
 	if fsys == nil {
 		return nil, fmt.Errorf("tecgonic: no input filesystem provided")
+	}
+	// The engine forms the jobname from the file stem, while docBase below strips
+	// only a ".tex" suffix; they agree only for a ".tex" or extensionless main.
+	// Reject anything else at the boundary rather than fail late with a confusing
+	// "no PDF output was generated" (audit C5).
+	if ext := path.Ext(path.Base(mainName)); ext != "" && ext != ".tex" {
+		return nil, fmt.Errorf("tecgonic: main source %q must use the .tex extension or none, not %q", mainName, ext)
 	}
 	if info, err := fs.Stat(fsys, mainName); err != nil {
 		return nil, fmt.Errorf("tecgonic: main source %q not found in input fs: %w", mainName, err)
