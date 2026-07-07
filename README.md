@@ -26,8 +26,8 @@ func main() {
 	bundleDir := os.Getenv("HOME") + "/.cache/tecgonic/bundle"
 	cacheDir := os.Getenv("HOME") + "/.cache/tecgonic/wasm-cache"
 
-	// Download the TeX bundle (~800 MB, one-time).
-	tecgonic.PrepareBundle(ctx, bundleDir, "", false, tecgonic.WithProgress(os.Stderr))
+	// Download the TeX bundle (one-time).
+	tecgonic.PrepareBundle(ctx, bundleDir, tecgonic.WithProgress(os.Stderr))
 
 	// Create compiler and generate format file (one-time).
 	compiler, _ := tecgonic.New(ctx,

@@ -82,7 +82,7 @@ func TestPrepareBundleExtracts(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
 		t.Fatalf("PrepareBundle: %v", err)
 	}
 
@@ -116,10 +116,10 @@ func TestPrepareBundleSkipsWhenComplete(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
 		t.Fatalf("first PrepareBundle: %v", err)
 	}
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
 		t.Fatalf("second PrepareBundle: %v", err)
 	}
 	if hits != 1 {
@@ -133,7 +133,7 @@ func TestPrepareBundleForceReextractsClearingStale(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
 		t.Fatalf("PrepareBundle: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestPrepareBundleForceReextractsClearingStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := PrepareBundle(context.Background(), dest, srv.URL, true); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL), WithForce()); err != nil {
 		t.Fatalf("force PrepareBundle: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestPrepareBundleRejectsTooFewFiles(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	err := PrepareBundle(context.Background(), dest, srv.URL, false)
+	err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL))
 	if err == nil {
 		t.Fatal("expected error for too-few files, got nil")
 	}
@@ -188,7 +188,7 @@ func TestPrepareBundleRejectsMissingSentinel(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	err := PrepareBundle(context.Background(), dest, srv.URL, false)
+	err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL))
 	if err == nil {
 		t.Fatal("expected error for missing sentinel, got nil")
 	}
@@ -211,7 +211,7 @@ func TestPrepareBundleRejectsDuplicateBasename(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	err := PrepareBundle(context.Background(), dest, srv.URL, false)
+	err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL))
 	if err == nil {
 		t.Fatal("expected error for duplicate basename, got nil")
 	}
@@ -224,7 +224,7 @@ func TestPrepareBundleVerifiesSHA256(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "bundle")
 
 	// Wrong digest fails and leaves nothing behind.
-	err := PrepareBundle(context.Background(), dest, srv.URL, false, WithExpectedSHA256("00"+hex.EncodeToString(make([]byte, 31))))
+	err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL), WithExpectedSHA256("00"+hex.EncodeToString(make([]byte, 31))))
 	if err == nil {
 		t.Fatal("expected SHA-256 mismatch error, got nil")
 	}
@@ -234,7 +234,7 @@ func TestPrepareBundleVerifiesSHA256(t *testing.T) {
 
 	// Correct digest succeeds.
 	sum := sha256.Sum256(body)
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false, WithExpectedSHA256(hex.EncodeToString(sum[:]))); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL), WithExpectedSHA256(hex.EncodeToString(sum[:]))); err != nil {
 		t.Fatalf("PrepareBundle with correct digest: %v", err)
 	}
 }
@@ -260,7 +260,7 @@ func TestPrepareBundleAdoptsLegacyDir(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
 		t.Fatalf("PrepareBundle: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dest, manifestName)); err != nil {
@@ -284,7 +284,7 @@ func TestPrepareBundleTinyAndEmptyEntries(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
 		t.Fatalf("PrepareBundle: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "one-byte"))
@@ -318,7 +318,7 @@ func TestPrepareBundleRawEntryWithGzipMagic(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "bundle")
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
 		t.Fatalf("PrepareBundle: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "font.tfm"))
@@ -336,7 +336,7 @@ func TestPrepareBundleHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 	dest := filepath.Join(t.TempDir(), "bundle")
-	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err == nil {
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err == nil {
 		t.Fatal("expected error on HTTP 404, got nil")
 	}
 }
