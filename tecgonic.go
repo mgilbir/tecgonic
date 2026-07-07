@@ -171,6 +171,12 @@ func (c *Compiler) Close(ctx context.Context) error {
 // If bundleDir is empty, the compiler's default bundle directory (set with
 // WithDefaultBundleDir) is used, so the directory need not be repeated when it
 // matches the compiler's default.
+//
+// bundleDir must be writable: latex.fmt is written into it (atomically, via a
+// temp file and rename). Concurrent calls against the same bundleDir are safe —
+// the atomic write means a reader never sees a torn format file — but they
+// duplicate the generation work, so prefer a single call before serving
+// compiles.
 func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ...GenerateFormatOption) error {
 	var fmtCfg generateFormatConfig
 	for _, o := range opts {
