@@ -95,14 +95,32 @@ func WithHTTPClient(client *http.Client) PrepareBundleOption {
 // destDir. A mismatch fails PrepareBundle and leaves destDir untouched. Use
 // this to pin a known-good bundle and detect corruption or a substituted
 // mirror. When unset, no cryptographic verification is performed.
+//
+// The digest must be 64 hex characters; a malformed value fails PrepareBundle
+// up front, before any download. Verification happens only when a download
+// actually occurs — see PrepareBundle for how an already-complete destDir is
+// treated.
 func WithExpectedSHA256(hexDigest string) PrepareBundleOption {
 	return func(c *prepareBundleConfig) {
 		c.expectSHA256 = hexDigest
 	}
 }
 
+// validateHexDigest checks that s is a well-formed SHA-256 hex digest.
+func validateHexDigest(s string) error {
+	if len(s) != sha256.Size*2 {
+		return fmt.Errorf("tecgonic: WithExpectedSHA256: digest must be %d hex characters, got %d", sha256.Size*2, len(s))
+	}
+	if _, err := hex.DecodeString(s); err != nil {
+		return fmt.Errorf("tecgonic: WithExpectedSHA256: not a valid hex digest: %w", err)
+	}
+	return nil
+}
+
 // countingHashReader tracks the number of bytes read and the running SHA-256 of
-// the stream, and reports download progress.
+// the stream, reports download progress, and tracks the length of the trailing
+// run of zero bytes so a caller can confirm the tar end-of-archive marker was
+// present (see trailingZeros).
 type countingHashReader struct {
 	r     io.Reader
 	h     hash.Hash
@@ -110,6 +128,12 @@ type countingHashReader struct {
 	read  int64
 	w     io.Writer // progress sink, nil to disable
 	last  int64     // last reported byte count
+	// trailingZeros is the number of consecutive zero bytes at the current end of
+	// the stream. archive/tar treats a stream that ends on a 512-byte block
+	// boundary as EOF even when the two-zero-block end-of-archive marker is
+	// absent, so a boundary-truncated download extracts "successfully"; a full
+	// archive instead ends in >= 1024 zero bytes (audit C2).
+	trailingZeros int64
 }
 
 func (cr *countingHashReader) Read(p []byte) (int, error) {
@@ -117,6 +141,12 @@ func (cr *countingHashReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		_, _ = cr.h.Write(p[:n])
 		cr.read += int64(n)
+		// Extend or reset the trailing zero-run based on this chunk.
+		if nz := lastNonZeroIndex(p[:n]); nz < 0 {
+			cr.trailingZeros += int64(n)
+		} else {
+			cr.trailingZeros = int64(n - nz - 1)
+		}
 		if cr.w != nil && cr.read-cr.last >= 10*1024*1024 {
 			cr.last = cr.read
 			mb := cr.read / (1024 * 1024)
@@ -131,6 +161,23 @@ func (cr *countingHashReader) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
+
+// lastNonZeroIndex returns the index of the last non-zero byte in b, or -1 when
+// b is empty or all zero.
+func lastNonZeroIndex(b []byte) int {
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] != 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// tarTrailerBytes is the size of the tar end-of-archive marker: two zero-filled
+// 512-byte records. A complete archive stream ends in at least this many zero
+// bytes (the last entry's padding pushes it higher); a boundary-truncated one
+// does not.
+const tarTrailerBytes = 2 * 512
 
 // PrepareBundle downloads and extracts a Tectonic TeX Live bundle to destDir.
 //
@@ -153,6 +200,14 @@ func PrepareBundle(ctx context.Context, destDir string, opts ...PrepareBundleOpt
 	var cfg prepareBundleConfig
 	for _, o := range opts {
 		o(&cfg)
+	}
+
+	// Reject a malformed pin up front, before the ~800 MB download and 134k-file
+	// extraction it would otherwise fail after (audit C13).
+	if cfg.expectSHA256 != "" {
+		if err := validateHexDigest(cfg.expectSHA256); err != nil {
+			return err
+		}
 	}
 
 	bundleURL := cfg.bundleURL
@@ -268,6 +323,14 @@ func downloadAndExtract(ctx context.Context, client *http.Client, bundleURL, des
 	// covers the entire response body.
 	if _, err := io.Copy(io.Discard, reader); err != nil {
 		return bundleManifest{}, fmt.Errorf("tecgonic: reading bundle stream: %w", err)
+	}
+
+	// Require the end-of-archive marker. archive/tar returns EOF for a stream that
+	// ends on a block boundary without the marker, so a truncated-but-consistent
+	// download (e.g. a CDN that cached a partial object) would otherwise extract
+	// and be marked permanently complete (audit C2).
+	if reader.trailingZeros < tarTrailerBytes {
+		return bundleManifest{}, fmt.Errorf("tecgonic: bundle stream truncated: missing tar end-of-archive marker after %d files (got a partial or interrupted download)", files)
 	}
 
 	digest := hex.EncodeToString(reader.h.Sum(nil))

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -103,6 +104,54 @@ func TestPrepareBundleExtracts(t *testing.T) {
 	leftovers, _ := filepath.Glob(filepath.Join(parent, ".tecgonic-staging-*"))
 	if len(leftovers) != 0 {
 		t.Errorf("staging dirs left behind: %v", leftovers)
+	}
+}
+
+func TestPrepareBundleRejectsTruncatedStream(t *testing.T) {
+	body := syntheticBundle()
+	// Strip the two-zero-block end-of-archive marker written by tar.Writer.Close.
+	// The stream now ends cleanly on a 512-byte boundary, which archive/tar
+	// reports as EOF — indistinguishable from a complete read without the marker
+	// check (audit C2). All entries are still intact, so the file-count and
+	// sentinel checks would pass.
+	truncated := body[:len(body)-2*512]
+	srv := serveBytes(t, truncated)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "bundle")
+	err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL))
+	if err == nil {
+		t.Fatal("expected error for a truncated bundle stream, got nil")
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("error does not indicate truncation: %v", err)
+	}
+	// The bundle must not be marked complete, so a later run re-downloads.
+	if _, statErr := os.Stat(filepath.Join(dest, manifestName)); statErr == nil {
+		t.Error("truncated bundle was marked complete")
+	}
+}
+
+func TestPrepareBundleRejectsMalformedDigest(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write(syntheticBundle())
+	}))
+	defer srv.Close()
+
+	for _, digest := range []string{"deadbeef", strings.Repeat("z", 64), "abc123"} {
+		dest := filepath.Join(t.TempDir(), "bundle")
+		err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL), WithExpectedSHA256(digest))
+		if err == nil {
+			t.Fatalf("expected error for malformed digest %q, got nil", digest)
+		}
+		if !strings.Contains(err.Error(), "digest") && !strings.Contains(err.Error(), "hex") {
+			t.Errorf("digest %q: error does not mention the digest: %v", digest, err)
+		}
+	}
+	if hits != 0 {
+		t.Errorf("a malformed digest triggered %d download(s); it must fail before downloading", hits)
 	}
 }
 
