@@ -5,7 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/mgilbir/andsifr/sys"
 )
+
+// texAbortExitCode is the WASI exit status the engine uses (via proc_exit) when
+// it aborts a run through the fatal longjmp path (_tt_abort): a TeX error, an
+// overflow, or another controlled engine abort. It is a contract with the WASM
+// build (mgilbir/tectonic@wasm, wasi-deps/sjlj-stub/setjmp.c): a typed signal
+// that replaces scraping stderr for the "TeX engine abort" marker. Older modules
+// that abort via an untyped trap instead are still handled by the marker
+// fallback in newEngineError.
+const texAbortExitCode = 42
 
 // ErrorKind classifies why a Tectonic engine run failed. It is what callers
 // building error handling should branch on: show a TeX error to the document
@@ -103,10 +114,11 @@ func (e *EngineError) Unwrap() error {
 }
 
 // texAbortMarkers appear in tectonic's stderr when the engine deliberately
-// aborts on a TeX error. A TeX error unwinds via a longjmp that surfaces to
-// wazero as a WASM trap — indistinguishable by exit code from a genuine engine
-// fault — so the log is the only reliable signal that the document, not the
-// engine, is at fault. This couples classification to the WASM build's wording;
+// aborts on a TeX error. They are the fallback signal for older WASM modules
+// whose abort unwinds via a longjmp that surfaces to wazero as an untyped trap —
+// indistinguishable by exit code from a genuine engine fault — so the log is the
+// only signal. Current modules instead proc_exit with texAbortExitCode, which
+// newEngineError prefers. This couples the fallback to the WASM build's wording;
 // the integration tests pin it.
 var texAbortMarkers = []string{
 	"TeX engine abort", // "fatal: longjmp called (TeX engine abort)"
@@ -164,6 +176,21 @@ func newEngineError(callErr error, exitCode int32, logs string) *EngineError {
 	// context does not mislabel a TeX error when cancellation is disabled.
 	if callErr != nil && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
 		return &EngineError{Kind: KindCancelled, Logs: logs, WasmErr: callErr}
+	}
+
+	// Typed abort: the engine ends a controlled abort with proc_exit, which
+	// wazero surfaces as a *sys.ExitError. texAbortExitCode means the TeX engine
+	// aborted the run — a document error, unless the log shows the abort was an
+	// environment fault (which the engine reaches through the same path). Any
+	// other exit code is an engine fault. This is the deterministic successor to
+	// the stderr-marker heuristic below, which now only serves older modules that
+	// still abort via an untyped trap.
+	var exitErr *sys.ExitError
+	if errors.As(callErr, &exitErr) {
+		if exitErr.ExitCode() == texAbortExitCode && !isSetupFailure(logs) {
+			return &EngineError{Kind: KindTexError, ExitCode: int32(exitErr.ExitCode()), Logs: logs}
+		}
+		return &EngineError{Kind: KindEngine, ExitCode: int32(exitErr.ExitCode()), Logs: logs, WasmErr: callErr}
 	}
 
 	// An environment fault (unloadable format file, missing bundle mount) aborts
