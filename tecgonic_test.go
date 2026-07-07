@@ -223,6 +223,31 @@ func TestCompileValidatesEnvironment(t *testing.T) {
 	})
 }
 
+// TestABIVersion checks the cross-repo handshake: New succeeds against the
+// embedded module (whose ABI matches), and verifyABIVersion rejects a version
+// the package was not built for — the loud failure that guards against a WASM
+// rebuilt from an incompatible tectonic source.
+func TestABIVersion(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx) // no bundle needed; the ABI check runs inside New
+	if err != nil {
+		t.Fatalf("New should pass the ABI check against the embedded module: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	// A version the package was not built for must be rejected clearly.
+	if err := verifyABIVersion(ctx, c.runtime, c.compiled, expectedABIVersion+1); err == nil {
+		t.Error("expected a mismatch error for the wrong expected version, got nil")
+	} else if !strings.Contains(err.Error(), "ABI version") {
+		t.Errorf("mismatch error does not mention the ABI version: %v", err)
+	}
+
+	// The real expected version verifies.
+	if err := verifyABIVersion(ctx, c.runtime, c.compiled, expectedABIVersion); err != nil {
+		t.Errorf("expected ABI %d to verify against the embedded module, got: %v", expectedABIVersion, err)
+	}
+}
+
 func TestCompileConcurrent(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()

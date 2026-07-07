@@ -145,12 +145,62 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 		return nil, fmt.Errorf("tecgonic: compiling WASM module: %w", err)
 	}
 
+	if err := verifyABIVersion(ctx, rt, compiled, expectedABIVersion); err != nil {
+		_ = rt.Close(ctx)
+		closeCache()
+		return nil, err
+	}
+
 	return &Compiler{
 		runtime:  rt,
 		compiled: compiled,
 		config:   cfg,
 		cache:    cache,
 	}, nil
+}
+
+// expectedABIVersion is the host-facing ABI (see tectonic_abi_version in
+// mgilbir/tectonic@wasm) this package is built to drive: export names and
+// signatures, the reserved proc_exit abort status (texAbortExitCode), the
+// recognized environment variables, and the guest mount layout. Bump it in
+// lockstep with the module whenever that contract changes.
+const expectedABIVersion = 1
+
+// verifyABIVersion reads the module's self-reported ABI version and rejects a
+// module this package was not built to drive. The embedded WASM and this
+// package ship together, so a mismatch means the module was rebuilt from an
+// incompatible tectonic source (see the Makefile's TECTONIC_REF) without a
+// matching change here — a loud error at construction beats silent
+// misclassification at runtime.
+func verifyABIVersion(ctx context.Context, rt wazero.Runtime, compiled wazero.CompiledModule, expected int) error {
+	// A throwaway instance with start functions cleared: tectonic_abi_version
+	// returns a constant, so it needs neither _initialize nor any mount.
+	cfg := wazero.NewModuleConfig().
+		WithName("").
+		WithStartFunctions().
+		WithStdout(io.Discard).
+		WithStderr(io.Discard)
+	mod, err := rt.InstantiateModule(ctx, compiled, cfg)
+	if err != nil {
+		return fmt.Errorf("tecgonic: instantiating module for ABI check: %w", err)
+	}
+	defer func() { _ = mod.Close(ctx) }()
+
+	fn := mod.ExportedFunction("tectonic_abi_version")
+	if fn == nil {
+		return fmt.Errorf("tecgonic: WASM module exports no tectonic_abi_version; it predates the ABI handshake — rebuild it with `make wasm` from a compatible tectonic@wasm ref (expected ABI %d)", expected)
+	}
+	res, err := fn.Call(ctx)
+	if err != nil {
+		return fmt.Errorf("tecgonic: reading WASM module ABI version: %w", err)
+	}
+	if len(res) == 0 {
+		return fmt.Errorf("tecgonic: WASM module ABI check returned no value")
+	}
+	if got := int(int32(uint32(res[0]))); got != expected {
+		return fmt.Errorf("tecgonic: WASM module ABI version %d does not match the expected %d; the embedded module and this package are out of sync — rebuild the module (`make wasm`) or update tecgonic", got, expected)
+	}
+	return nil
 }
 
 // Close releases the WASM runtime and all associated resources.
