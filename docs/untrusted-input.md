@@ -100,9 +100,14 @@ filesystem quotas on the temp location.
 ## How hostile failures surface
 
 A document that fails — bad syntax, a missing package, a hit memory cap, a
-timeout — comes back as an `*EngineError`. The classification is driven by the
-engine's own exit signal, **not** by anything the document writes to stderr, so
-a document cannot forge how its failure is reported:
+timeout — comes back as an `*EngineError`. Classification is driven by the
+engine's own exit code and, for operational faults, tectonic's own
+`tectonic warning:` diagnostics — **not** by anything the document itself can
+write to stderr. A document's output surfaces on `tectonic error:` lines, which
+never sway the verdict (e.g. `\input`-ing a missing file whose name embeds an
+internal marker stays a document error, not an operational one). So a document
+cannot forge how its failure is reported — neither dressing a syntax error up as
+an operational fault to page your on-call, nor a fault down as a clean success:
 
 - `IsTexError()` → the document is at fault (or exhausted the memory cap). Return
   the logs to whoever submitted it.
