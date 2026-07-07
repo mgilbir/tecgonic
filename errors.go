@@ -125,17 +125,29 @@ var texAbortMarkers = []string{
 	"tectonic error:",  // "tectonic error: input.tex:3: Undefined control sequence"
 }
 
-// setupFailureMarkers appear when tectonic aborts because it could not load its
-// environment — the format file or a bundle input — rather than because the
-// document is wrong. They take precedence over texAbortMarkers so an operational
-// fault (an unmounted or wrong bundle dir, a missing latex.fmt) is classified as
-// KindEngine and pages on-call, instead of being blamed on the document author
-// (audit C1). Compile pre-validates the bundle dir and latex.fmt, so these are a
-// belt-and-braces backstop for faults that slip past that check.
+// setupFailureMarkers identify tectonic's own diagnostic for an environment
+// fault: a mount the engine expected is absent (a typo'd or unmounted bundle or
+// fonts dir), so the format file or a bundle input cannot be opened. Such a fault
+// is operational — it must classify as KindEngine and page on-call, not be blamed
+// on the document author — so it takes precedence over texAbortMarkers. Compile
+// pre-validates the bundle dir and latex.fmt, so this is a belt-and-braces
+// backstop for faults that slip past that check (e.g. a mount whose top directory
+// exists at validation but is incomplete, or GenerateFormat's own bundle dir).
+//
+// The marker is trusted only on a runtimeWarningPrefix line (see isSetupFailure).
+// The engine reports these faults on its "tectonic warning:" channel, whereas a
+// document can only influence "tectonic error: ... File `...' not found" lines —
+// e.g. by \input-ing a file whose name embeds a marker. Matching a marker
+// anywhere in the log (the previous behavior) let such a document forge an
+// operational fault out of an ordinary document error, mislabeling its own
+// KindTexError as KindEngine and paging on-call (audit 2026-07-07 C1).
 var setupFailureMarkers = []string{
-	"open of input latex failed",                  // latex.fmt / the latex format input could not be opened
 	"failed to find a pre-opened file descriptor", // a mount is absent (e.g. a typo'd bundle/fonts dir)
 }
+
+// runtimeWarningPrefix marks a line as one of tectonic's own runtime diagnostics,
+// as opposed to a "tectonic error:" line whose text a document can influence.
+const runtimeWarningPrefix = "tectonic warning:"
 
 // markerTailBytes bounds how far back a trap-classification marker is trusted.
 // The runtime writes "TeX engine abort" as the final line before a longjmp trap,
@@ -154,7 +166,18 @@ func containsAny(s string, markers []string) bool {
 
 func isTexAbort(logs string) bool { return containsAny(logs, texAbortMarkers) }
 
-func isSetupFailure(logs string) bool { return containsAny(logs, setupFailureMarkers) }
+// isSetupFailure reports whether the log shows an environment fault on tectonic's
+// own warning channel. It requires a setup marker and runtimeWarningPrefix on the
+// same line so a document cannot forge the marker through a controlled filename
+// echoed on a "tectonic error:" line (audit 2026-07-07 C1).
+func isSetupFailure(logs string) bool {
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, runtimeWarningPrefix) && containsAny(line, setupFailureMarkers) {
+			return true
+		}
+	}
+	return false
+}
 
 // tail returns the last markerTailBytes of s.
 func tail(s string) string {

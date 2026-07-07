@@ -24,7 +24,23 @@ func TestNewEngineErrorTypedAbort(t *testing.T) {
 		want    ErrorKind
 	}{
 		{"tex abort exit code", texAbort, "! Undefined control sequence\nfatal: longjmp called (TeX engine abort)\n", KindTexError},
-		{"tex abort code but setup fault in log", texAbort, "tectonic warning: open of input latex failed\nfatal: longjmp called (TeX engine abort)\n", KindEngine},
+		{
+			// The genuine environment fault, as the runtime actually emits it: a
+			// missing mount surfaces on the "tectonic warning:" channel.
+			"tex abort code but genuine setup fault in log", texAbort,
+			"tectonic warning: open of input tectonic-format-latex.tex failed: failed to find a pre-opened file descriptor through which \"/bundle/tectonic-format-latex.tex\" could be opened\nfatal: longjmp called (TeX engine abort)\n",
+			KindEngine,
+		},
+		{
+			// A document that \input-s a file whose name embeds a setup marker: the
+			// marker rides a document-controlled "tectonic error: ... File `...' not
+			// found" line, not the runtime's warning channel, so it must stay a
+			// document error rather than be relabeled an operational fault that pages
+			// on-call (audit 2026-07-07 C1).
+			"forged setup marker on error line stays tex", texAbort,
+			"tectonic error: input.tex:2: ! LaTeX Error: File `failed to find a pre-opened file descriptor.tex' not found.\nfatal: longjmp called (TeX engine abort)\n",
+			KindTexError,
+		},
 		{"other exit code is engine fault", otherExit, "something unexpected\n", KindEngine},
 	}
 	for _, tc := range cases {
@@ -63,10 +79,10 @@ func TestNewEngineErrorClassification(t *testing.T) {
 	}{
 		{"tex abort trap", trap, 0, "! Undefined control sequence\nfatal: longjmp called (TeX engine abort)\n", KindTexError},
 		{"missing package exit", nil, 1, "tectonic error: input.tex:3: ! LaTeX Error: File 'xcolor.sty' not found\n", KindTexError},
-		{"unloadable format is engine fault", trap, 0, "tectonic warning: open of input latex failed\nfatal: longjmp called (TeX engine abort)\n", KindEngine},
-		{"missing mount is engine fault", trap, 0, "tectonic warning: failed to find a pre-opened file descriptor for \"/bundle\"\nfatal: longjmp called (TeX engine abort)\n", KindEngine},
+		{"genuine mount fault is engine fault", trap, 0, "tectonic warning: open of input tectonic-format-latex.tex failed: failed to find a pre-opened file descriptor through which \"/bundle/tectonic-format-latex.tex\" could be opened\nfatal: longjmp called (TeX engine abort)\n", KindEngine},
 		{"oom trap without abort marker", trap, 0, "loading fonts\nwasm error: out of memory\n", KindEngine},
 		{"forged marker then oom trap", trap, 0, forged, KindEngine},
+		{"forged mount marker as \\input name stays tex", nil, 1, "tectonic error: input.tex:2: ! LaTeX Error: File `failed to find a pre-opened file descriptor.tex' not found.\nfatal: longjmp called (TeX engine abort)\n", KindTexError},
 		{"cancelled", context.Canceled, 0, "anything", KindCancelled},
 		{"deadline exceeded", context.DeadlineExceeded, 0, "anything", KindCancelled},
 		{"unexplained nonzero exit", nil, 42, "no recognizable marker here\n", KindEngine},
