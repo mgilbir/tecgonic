@@ -12,11 +12,10 @@ import (
 
 func bundleDir(tb testing.TB) string {
 	tb.Helper()
-	dir := os.Getenv("TECGONIC_BUNDLE_DIR")
-	if dir == "" {
-		tb.Skip("TECGONIC_BUNDLE_DIR not set")
+	if testBundleDir == "" {
+		tb.Skip("no bundle available (testdata bundle failed to extract and TECGONIC_BUNDLE_DIR unset)")
 	}
-	return dir
+	return testBundleDir
 }
 
 func TestCompileSimple(t *testing.T) {
