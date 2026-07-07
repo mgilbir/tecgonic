@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const DefaultBundleURL = "https://relay.fullyjustified.net/default_bundle_v33.tar"
@@ -95,6 +96,11 @@ func WithBundleURL(url string) PrepareBundleOption {
 
 // WithForce re-downloads and re-extracts the bundle even when destDir already
 // holds a complete one, replacing it wholesale.
+//
+// The replacement swap briefly leaves destDir absent (a same-filesystem remove
+// of a 134k-file tree is not instantaneous), so a Compile that reads the bundle
+// directory concurrently with a forced refresh can fail. Do not compile against
+// a bundle directory while forcing a refresh of it.
 func WithForce() PrepareBundleOption {
 	return func(c *prepareBundleConfig) {
 		c.force = true
@@ -262,6 +268,9 @@ func PrepareBundle(ctx context.Context, destDir string, opts ...PrepareBundleOpt
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("tecgonic: creating bundle parent dir: %w", err)
 	}
+	// Reclaim staging/backup directories a crashed or killed predecessor left
+	// behind (each can be several GB), before adding our own (audit C7).
+	sweepStaleLeftovers(parent)
 	staging, err := os.MkdirTemp(parent, ".tecgonic-staging-*")
 	if err != nil {
 		return fmt.Errorf("tecgonic: creating staging dir: %w", err)
@@ -508,10 +517,44 @@ func writeManifest(dir string, m bundleManifest) error {
 	return nil
 }
 
+// staleLeftoverAge is how old a staging or backup directory must be before
+// sweepStaleLeftovers reclaims it. It is far longer than any real extraction or
+// swap, so a concurrent PrepareBundle (whose staging dir has a recent mtime) is
+// never disturbed — only genuine crash leftovers are removed.
+const staleLeftoverAge = time.Hour
+
+// sweepStaleLeftovers best-effort removes staging and backup directories that a
+// crashed or SIGKILL'd run stranded in parent (a defer RemoveAll cannot fire on
+// SIGKILL). It matches only the namespaced names this package creates, and skips
+// any modified within staleLeftoverAge so an in-progress concurrent run's
+// staging directory is left alone. Errors are ignored: reclamation is a
+// best-effort courtesy, not a precondition for extraction.
+func sweepStaleLeftovers(parent string) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		// Staging dirs are ".tecgonic-staging-*"; swapIntoPlace backups are
+		// "<dest>.old-.tecgonic-staging-*".
+		if !strings.HasPrefix(name, ".tecgonic-staging-") && !strings.Contains(name, ".old-.tecgonic-staging-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < staleLeftoverAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(parent, name))
+	}
+}
+
 // swapIntoPlace atomically replaces destDir with staging, removing any stale
 // bundle already present. The two renames leave a brief window in which destDir
-// does not exist; a concurrent reader sees either the old bundle or the new one,
-// never a mixture.
+// does not exist: a concurrent reader sees the old bundle, then briefly no
+// bundle, then the new one — never a half-written mixture, but the "no bundle"
+// state means a Compile racing a WithForce refresh can fail. Don't compile
+// against a bundle directory while forcing a refresh of it.
 func swapIntoPlace(staging, destDir string) error {
 	backup := ""
 	if _, err := os.Stat(destDir); err == nil {

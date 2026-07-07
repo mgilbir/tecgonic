@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // itarEntry is one file in a synthetic itar bundle.
@@ -260,6 +261,41 @@ func TestReadBundleInfo(t *testing.T) {
 	// No bundle → error.
 	if _, err := ReadBundleInfo(t.TempDir()); err == nil {
 		t.Error("expected error reading bundle info from an empty dir")
+	}
+}
+
+func TestSweepStaleLeftovers(t *testing.T) {
+	parent := t.TempDir()
+	stale := filepath.Join(parent, ".tecgonic-staging-stale")
+	staleBackup := filepath.Join(parent, "bundle.old-.tecgonic-staging-stale")
+	fresh := filepath.Join(parent, ".tecgonic-staging-fresh")
+	unrelated := filepath.Join(parent, "keep-me")
+	for _, d := range []string{stale, staleBackup, fresh, unrelated} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Age the two leftovers past the reclamation threshold; leave fresh/unrelated
+	// at their (recent) mtime.
+	old := time.Now().Add(-2 * staleLeftoverAge)
+	for _, d := range []string{stale, staleBackup} {
+		if err := os.Chtimes(d, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sweepStaleLeftovers(parent)
+
+	for _, d := range []string{stale, staleBackup} {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("stale leftover %q not reclaimed", filepath.Base(d))
+		}
+	}
+	// A recent staging dir (a possible concurrent run) and unrelated files stay.
+	for _, d := range []string{fresh, unrelated} {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("%q should have been kept: %v", filepath.Base(d), err)
+		}
 	}
 }
 

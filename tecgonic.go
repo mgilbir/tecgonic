@@ -184,12 +184,11 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	inputDir := filepath.Join(tmpDir, "input")
 	outputDir := filepath.Join(tmpDir, "output")
 	cacheDir := filepath.Join(tmpDir, "cache")
 	fontsDir := filepath.Join(tmpDir, "fonts")
 
-	for _, dir := range []string{inputDir, outputDir, cacheDir, fontsDir} {
+	for _, dir := range []string{outputDir, cacheDir, fontsDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("tecgonic: creating directory %s: %w", dir, err)
 		}
@@ -201,11 +200,13 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 		stderrWriter = io.MultiWriter(stderrBuf, fmtCfg.stderr)
 	}
 
+	// Mounts mirror runEngine: /bundle and /fonts read-only, /output and /cache
+	// writable (the generated format lands in /cache). Format generation reads no
+	// input document, so there is no /input mount (audit C10).
 	fsConfig := wazero.NewFSConfig().
-		WithDirMount(inputDir, "/input").
 		WithDirMount(outputDir, "/output").
 		WithReadOnlyDirMount(bundleDir, "/bundle").
-		WithDirMount(fontsDir, "/fonts").
+		WithReadOnlyDirMount(fontsDir, "/fonts").
 		WithDirMount(cacheDir, "/cache")
 
 	modConfig := wazero.NewModuleConfig().
