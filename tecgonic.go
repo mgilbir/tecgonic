@@ -222,8 +222,11 @@ func (c *Compiler) Close(ctx context.Context) error {
 // WithDefaultBundleDir) is used, so the directory need not be repeated when it
 // matches the compiler's default.
 //
-// bundleDir must be writable: latex.fmt is written into it (atomically, via a
-// temp file and rename). Concurrent calls against the same bundleDir are safe —
+// bundleDir must exist and be a directory (validated up front, so a typo'd path
+// fails with a config-shaped error rather than an *EngineError from the engine
+// running against a phantom mount). It must be writable: latex.fmt is written
+// into it (atomically, via a temp file and rename). Concurrent calls against the
+// same bundleDir are safe —
 // the atomic write means a reader never sees a torn format file — but they
 // duplicate the generation work, so prefer a single call before serving
 // compiles.
@@ -237,6 +240,14 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 	}
 	if bundleDir == "" {
 		return fmt.Errorf("tecgonic: no bundle directory specified (pass one or use WithDefaultBundleDir)")
+	}
+	// Validate the directory up front, as Compile does, so a typo'd path fails
+	// with a config-shaped error here instead of the engine mounting a phantom
+	// directory and aborting mid-run (a failure that surfaces as an *EngineError).
+	// Unlike validateBundleDir, latex.fmt is not required — generating it is the
+	// job of this call.
+	if err := validateBundleDirExists(bundleDir); err != nil {
+		return err
 	}
 
 	// Skip if format file already exists
@@ -499,15 +510,26 @@ func (c *Compiler) resolveCompileConfig(opts []CompileOption) (compileConfig, er
 // phantom directory (wazero does not check) and aborting mid-compile, a failure
 // that would otherwise be misread as a document error (audit C6/C1).
 func validateBundleDir(dir string) error {
+	if err := validateBundleDirExists(dir); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(dir, "latex.fmt")); err != nil {
+		return fmt.Errorf("tecgonic: bundle directory %q has no latex.fmt (run Compiler.GenerateFormat first): %w", dir, err)
+	}
+	return nil
+}
+
+// validateBundleDirExists checks that dir exists and is a directory, without
+// requiring latex.fmt. GenerateFormat uses it to reject a typo'd bundle dir up
+// front (latex.fmt is what that call generates), while validateBundleDir layers
+// the latex.fmt requirement on top for the compile path.
+func validateBundleDirExists(dir string) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("tecgonic: bundle directory %q: %w", dir, err)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("tecgonic: bundle directory %q is not a directory", dir)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "latex.fmt")); err != nil {
-		return fmt.Errorf("tecgonic: bundle directory %q has no latex.fmt (run Compiler.GenerateFormat first): %w", dir, err)
 	}
 	return nil
 }
