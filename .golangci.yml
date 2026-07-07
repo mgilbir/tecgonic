@@ -1,0 +1,8 @@
+version: "2"
+
+# Standard linters (errcheck, govet, ineffassign, staticcheck, unused) plus a
+# few low-noise additions. Committed so contributors lint against the same set.
+linters:
+  enable:
+    - misspell
+    - unconvert

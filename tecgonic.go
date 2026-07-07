@@ -232,21 +232,26 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 		return newEngineError(nil, int32(results[0]), stderrBuf.String())
 	}
 
-	// Find the generated format file in cache and copy to bundle dir
+	// Find the generated format file in cache and copy to bundle dir. Prefer
+	// the expected latex.fmt; fall back to a lone *.fmt (a differently-named
+	// build), but refuse to guess among several rather than silently rebranding
+	// an arbitrary one as latex.fmt (audit C19).
 	fmtPath := filepath.Join(cacheDir, "latex.fmt")
 	if _, err := os.Stat(fmtPath); err != nil {
-		// Search for any .fmt file
 		entries, _ := os.ReadDir(cacheDir)
-		found := false
+		var candidates []string
 		for _, e := range entries {
-			if filepath.Ext(e.Name()) == ".fmt" {
-				fmtPath = filepath.Join(cacheDir, e.Name())
-				found = true
-				break
+			if !e.IsDir() && filepath.Ext(e.Name()) == ".fmt" {
+				candidates = append(candidates, e.Name())
 			}
 		}
-		if !found {
+		switch len(candidates) {
+		case 0:
 			return fmt.Errorf("tecgonic: no format file generated in cache (tectonic output: %s)", stderrBuf.String())
+		case 1:
+			fmtPath = filepath.Join(cacheDir, candidates[0])
+		default:
+			return fmt.Errorf("tecgonic: multiple format files generated (%v); expected latex.fmt", candidates)
 		}
 	}
 

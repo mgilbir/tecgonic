@@ -22,7 +22,13 @@ RUN rustup target add wasm32-wasip1
 # Stage 2: Clone source
 FROM toolchain AS source
 
-RUN git clone --branch wasm --recursive https://github.com/mgilbir/tectonic.git /src/tectonic
+# TECTONIC_REF pins the commit/branch built. Passing a specific SHA makes the
+# artifact reproducible and busts this layer's cache when it changes, so a
+# rebuild after an upstream push no longer silently reuses a stale clone.
+ARG TECTONIC_REF=wasm
+RUN git clone --recursive https://github.com/mgilbir/tectonic.git /src/tectonic \
+    && git -C /src/tectonic checkout "${TECTONIC_REF}" \
+    && git -C /src/tectonic submodule update --init --recursive
 
 WORKDIR /src/tectonic
 
