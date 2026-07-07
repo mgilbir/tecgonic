@@ -13,11 +13,20 @@ import (
 type ErrorKind int
 
 const (
-	// KindTexError means the input document is invalid; the captured Logs
-	// explain what. This is the author's problem, not an engine fault.
+	// KindTexError means tectonic reported a controlled abort while processing
+	// the document; the captured Logs explain what. This is usually an invalid
+	// document (the author's problem) — but the engine aborts through the same
+	// channel for some environment faults it only discovers mid-run, most
+	// notably a missing package in the bundle. Compile validates the bundle
+	// directory and latex.fmt before running the engine, so those setup faults
+	// surface as errors before classification; still, treat KindTexError as
+	// "tectonic rejected this run" and confirm the environment is sound before
+	// attributing every failure to the author. See IsTexError.
 	KindTexError ErrorKind = iota
-	// KindEngine means the WASM engine itself failed: a trap, or an exit code
-	// other than the expected TeX-error code. This is an operational fault.
+	// KindEngine means the WASM engine itself failed: a trap, an exit code other
+	// than the expected TeX-error code, or a controlled abort caused by the
+	// environment rather than the document (a format file or bundle input the
+	// engine could not load). This is an operational fault.
 	KindEngine
 	// KindCancelled means the run was aborted by context cancellation or a
 	// deadline being exceeded. Only observable when the compiler was created
@@ -72,8 +81,11 @@ func (e *EngineError) Error() string {
 	return msg
 }
 
-// IsTexError reports whether the failure was a TeX compilation error (the
-// document is invalid).
+// IsTexError reports whether tectonic aborted on a controlled TeX error, which
+// usually means the document is invalid. It can also fire for an environment
+// fault the engine only detects mid-run (e.g. a package missing from the
+// bundle), so verify the bundle is the one the document expects before routing
+// the failure back to the author as their mistake.
 func (e *EngineError) IsTexError() bool { return e.Kind == KindTexError }
 
 // IsEngineFailure reports whether the WASM engine itself faulted (a trap or an
@@ -101,13 +113,43 @@ var texAbortMarkers = []string{
 	"tectonic error:",  // "tectonic error: input.tex:3: Undefined control sequence"
 }
 
-func isTexAbort(logs string) bool {
-	for _, m := range texAbortMarkers {
-		if strings.Contains(logs, m) {
+// setupFailureMarkers appear when tectonic aborts because it could not load its
+// environment — the format file or a bundle input — rather than because the
+// document is wrong. They take precedence over texAbortMarkers so an operational
+// fault (an unmounted or wrong bundle dir, a missing latex.fmt) is classified as
+// KindEngine and pages on-call, instead of being blamed on the document author
+// (audit C1). Compile pre-validates the bundle dir and latex.fmt, so these are a
+// belt-and-braces backstop for faults that slip past that check.
+var setupFailureMarkers = []string{
+	"open of input latex failed",                  // latex.fmt / the latex format input could not be opened
+	"failed to find a pre-opened file descriptor", // a mount is absent (e.g. a typo'd bundle/fonts dir)
+}
+
+// markerTailBytes bounds how far back a trap-classification marker is trusted.
+// The runtime writes "TeX engine abort" as the final line before a longjmp trap,
+// so a genuine marker always lands in this tail; it narrows the window in which a
+// document could forge the marker to relabel a different trap (audit C8).
+const markerTailBytes = 8 << 10 // 8 KiB
+
+func containsAny(s string, markers []string) bool {
+	for _, m := range markers {
+		if strings.Contains(s, m) {
 			return true
 		}
 	}
 	return false
+}
+
+func isTexAbort(logs string) bool { return containsAny(logs, texAbortMarkers) }
+
+func isSetupFailure(logs string) bool { return containsAny(logs, setupFailureMarkers) }
+
+// tail returns the last markerTailBytes of s.
+func tail(s string) string {
+	if len(s) > markerTailBytes {
+		return s[len(s)-markerTailBytes:]
+	}
+	return s
 }
 
 // newEngineError classifies an engine run's outcome into an *EngineError.
@@ -123,11 +165,33 @@ func newEngineError(callErr error, exitCode int32, logs string) *EngineError {
 	if callErr != nil && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
 		return &EngineError{Kind: KindCancelled, Logs: logs, WasmErr: callErr}
 	}
-	// A TeX error aborts via a trap, so neither the exit code nor the presence of
-	// a trap distinguishes a bad document from an engine fault; the
-	// controlled-abort marker in the log does.
+
+	// An environment fault (unloadable format file, missing bundle mount) aborts
+	// through the same channel as a bad document. Its marker wins over the TeX
+	// markers so the failure is reported as the operational fault it is.
+	if isSetupFailure(logs) {
+		return &EngineError{Kind: KindEngine, ExitCode: exitCode, Logs: logs, WasmErr: callErr}
+	}
+
+	if callErr != nil {
+		// A trap. A genuine TeX error unwinds via longjmp, which the runtime
+		// reports as "TeX engine abort" on the last line before trapping; any
+		// other trap (e.g. a document hitting WithMemoryLimitMiB) does not emit
+		// it. Requiring that marker — and only trusting it in the log tail — keeps
+		// a hostile document from relabelling its own out-of-memory kill as a
+		// document error (audit C8).
+		if strings.Contains(tail(logs), "TeX engine abort") {
+			return &EngineError{Kind: KindTexError, ExitCode: exitCode, Logs: logs}
+		}
+		return &EngineError{Kind: KindEngine, ExitCode: exitCode, Logs: logs, WasmErr: callErr}
+	}
+
+	// A non-zero exit without a trap: tectonic printed a controlled error and
+	// exited (e.g. a package missing from the bundle). Both markers apply here;
+	// an exit code is not something a document can forge the way it can \typeout
+	// arbitrary text into the trap path above.
 	if isTexAbort(logs) {
 		return &EngineError{Kind: KindTexError, ExitCode: exitCode, Logs: logs}
 	}
-	return &EngineError{Kind: KindEngine, ExitCode: exitCode, Logs: logs, WasmErr: callErr}
+	return &EngineError{Kind: KindEngine, ExitCode: exitCode, Logs: logs}
 }

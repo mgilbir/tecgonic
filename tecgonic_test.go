@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -156,6 +158,69 @@ Hello
 	}
 
 	t.Logf("Got expected error: %v", err)
+}
+
+// TestCompileValidatesEnvironment covers the config-shaped errors that catch a
+// misconfigured environment before the engine runs (audit C6): a nonexistent
+// bundle dir, a bundle dir with no latex.fmt, and a nonexistent fonts dir. None
+// of these must surface as an *EngineError (which callers route to the author).
+func TestCompileValidatesEnvironment(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	fsys := fstest.MapFS{"main.tex": &fstest.MapFile{Data: []byte("x")}}
+	notEngineError := func(t *testing.T, err error) {
+		t.Helper()
+		var eng *EngineError
+		if errors.As(err, &eng) {
+			t.Errorf("environment fault surfaced as *EngineError: %v", err)
+		}
+	}
+
+	t.Run("nonexistent bundle dir", func(t *testing.T) {
+		_, err := c.Compile(ctx, fsys, "main.tex", WithBundleDir(filepath.Join(t.TempDir(), "nope")))
+		if err == nil {
+			t.Fatal("expected error for nonexistent bundle dir")
+		}
+		if !strings.Contains(err.Error(), "bundle directory") {
+			t.Errorf("error does not mention the bundle directory: %v", err)
+		}
+		notEngineError(t, err)
+	})
+
+	t.Run("bundle dir without latex.fmt", func(t *testing.T) {
+		_, err := c.Compile(ctx, fsys, "main.tex", WithBundleDir(t.TempDir()))
+		if err == nil {
+			t.Fatal("expected error for missing latex.fmt")
+		}
+		if !strings.Contains(err.Error(), "latex.fmt") {
+			t.Errorf("error does not mention latex.fmt: %v", err)
+		}
+		notEngineError(t, err)
+	})
+
+	t.Run("nonexistent fonts dir", func(t *testing.T) {
+		// A minimal fake bundle: validateBundleDir only requires latex.fmt, so the
+		// check proceeds to the fonts dir without needing a real bundle.
+		fakeBundle := t.TempDir()
+		if err := os.WriteFile(filepath.Join(fakeBundle, "latex.fmt"), []byte("fmt"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := c.Compile(ctx, fsys, "main.tex",
+			WithBundleDir(fakeBundle),
+			WithFontsDir(filepath.Join(t.TempDir(), "nofonts")))
+		if err == nil {
+			t.Fatal("expected error for nonexistent fonts dir")
+		}
+		if !strings.Contains(err.Error(), "fonts directory") {
+			t.Errorf("error does not mention the fonts directory: %v", err)
+		}
+		notEngineError(t, err)
+	})
 }
 
 func TestCompileConcurrent(t *testing.T) {
