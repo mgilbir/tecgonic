@@ -72,6 +72,24 @@ Hello, World!
 
 See [examples/simple](examples/simple) for a complete runnable example.
 
+The quick start has two phases — a one-time setup and a per-document compile
+that is safe to run concurrently:
+
+```mermaid
+flowchart LR
+    subgraph once["One-time setup"]
+        direction TB
+        PB["PrepareBundle<br/>download + extract the bundle<br/>(skipped if already present)"]
+        NEW["New<br/>compile the WASM module<br/>(~1.4 s, or ~50 ms cached)"]
+        GF["GenerateFormat<br/>write latex.fmt<br/>(skipped if present)"]
+        PB --> NEW --> GF
+    end
+    subgraph percall["Per document — concurrent-safe"]
+        C["Compile / CompileSource<br/>isolated WASM instance"] --> PDF["PDF bytes"]
+    end
+    GF --> C
+```
+
 ## Multi-file documents
 
 `CompileSource` handles a single self-contained source. For documents that pull
@@ -103,6 +121,20 @@ react:
 | `KindTexError` | tectonic aborted on a controlled TeX error — usually an invalid document | Return the logs to the document author |
 | `KindEngine` | an operational fault: a WASM trap, an unexpected exit, or an environment fault (unloadable format file, missing bundle mount) | Alert on-call |
 | `KindCancelled` | the run was cancelled or timed out (only with `WithContextCancellation`) | Retry or report the timeout |
+
+How a failure is classified — the engine signals a controlled abort with a
+reserved exit code, so the decision no longer depends on scraping stderr:
+
+```mermaid
+flowchart TD
+    F["Compile / GenerateFormat fails"] --> Q1{"context canceled<br/>or deadline exceeded?"}
+    Q1 -- yes --> KC["KindCancelled"]
+    Q1 -- no --> Q2{"engine reported a<br/>controlled abort?"}
+    Q2 -- no --> KE["KindEngine<br/>(trap, unexpected exit,<br/>or operational fault)"]
+    Q2 -- yes --> Q3{"log shows an environment<br/>fault? (missing format file,<br/>unreadable bundle)"}
+    Q3 -- yes --> KE
+    Q3 -- no --> KT["KindTexError<br/>(usually a bad document)"]
+```
 
 ```go
 pdf, err := compiler.Compile(ctx, fsys, "paper.tex")
