@@ -4,8 +4,8 @@ A Go library that compiles LaTeX documents to PDF using the [Tectonic](https://t
 
 ## Features
 
-- Pure Go — the Tectonic engine runs as WASM via [wazero](https://wazero.io/) (no CGo)
-- Self-contained bundle download — fetches the TeX Live bundle on first use
+- Pure Go — the Tectonic engine runs as WASM via [andsifr](https://github.com/mgilbir/andsifr), our optimized fork of [wazero](https://wazero.io/) (no CGo)
+- Self-contained bundle — one call (`PrepareBundle`) downloads and caches the TeX Live bundle
 - Concurrent compilation — each `Compile` call gets its own isolated WASM instance
 - WASM compilation cache — optional on-disk cache cuts startup from ~1.4 s to ~50 ms
 
@@ -91,6 +91,56 @@ directory (a main source at `src/paper.tex` reads `\input{intro}` as
 
 Because `os.DirFS` follows symlinks out of its root, prefer an in-memory `fs.FS`
 (or `fs.Sub` of a vetted tree) for untrusted input.
+
+## Error handling
+
+`Compile`, `CompileSource`, and `GenerateFormat` return an `*EngineError` when
+the engine run itself fails. Its `Kind` (or the `Is*` helpers) tells you how to
+react:
+
+| Kind | Meaning | Typical response |
+| --- | --- | --- |
+| `KindTexError` | tectonic aborted on a controlled TeX error — usually an invalid document | Return the logs to the document author |
+| `KindEngine` | an operational fault: a WASM trap, an unexpected exit, or an environment fault (unloadable format file, missing bundle mount) | Alert on-call |
+| `KindCancelled` | the run was cancelled or timed out (only with `WithContextCancellation`) | Retry or report the timeout |
+
+```go
+pdf, err := compiler.Compile(ctx, fsys, "paper.tex")
+if err != nil {
+	var engErr *tecgonic.EngineError
+	if errors.As(err, &engErr) {
+		switch {
+		case engErr.IsTexError():
+			// Show engErr.Logs to the author.
+		case engErr.IsCancelled(): // also: errors.Is(err, context.Canceled)
+			// Deadline/cancellation.
+		default: // IsEngineFailure()
+			// Operational fault — alert.
+		}
+	}
+	return err
+}
+```
+
+`KindTexError` usually means the document is at fault, but tectonic aborts
+through the same channel for one environment fault it only detects mid-run: a
+package missing from the bundle. Before routing every `KindTexError` back to the
+author, confirm the bundle is the one the document expects. Misconfigurations
+that tecgonic *can* detect up front — a nonexistent bundle directory, a bundle
+with no `latex.fmt`, a missing fonts directory — fail with a plain error (not an
+`*EngineError`) before the engine runs.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+| --- | --- |
+| `bundle directory … has no latex.fmt` | `GenerateFormat` was never run against that bundle dir |
+| `bundle directory …: no such file or directory` | Wrong `WithBundleDir` / `WithDefaultBundleDir` path |
+| `File 'xxx.sty' not found` (a `KindTexError`) | The bundle lacks the package (using the minibundle? a partial bundle?) |
+| `main source … must use the .tex extension or none` | Rename the main source to `.tex` (or drop the extension) |
+| `bundle stream truncated` from `PrepareBundle` | The download was cut short (a partial/cached object); it retries on the next call |
+| Compile ignores a context deadline | `WithContextCancellation` is off by default — enable it (see below) |
+| Benchmarks skip with "set `TECGONIC_BUNDLE_DIR`" | The heavy benchmarks need a full bundle; the minibundle lacks their packages |
 
 ## WASM compilation cache
 
@@ -234,6 +284,10 @@ a full bundle instead (more fonts, document classes, and benchmarks), point
 TECGONIC_BUNDLE_DIR=/path/to/bundle go test ./...
 ```
 
+The `longtblr` benchmarks (`BenchmarkCompileLongtblr`, `…SinglePass`,
+`…WarmAux`) need a full bundle for their packages; without `TECGONIC_BUNDLE_DIR`
+they skip. `BenchmarkCompileSimple` runs against the minibundle.
+
 ## Building the WASM module
 
 The pre-built WASM artifact is included under `wasm/`. To rebuild it from the Tectonic source:
@@ -253,3 +307,7 @@ This project would not be possible without:
 
 - [Tectonic](https://tectonic-typesetting.github.io/) — a modernized, complete, self-contained TeX/LaTeX engine. Tectonic does all the heavy lifting of turning LaTeX into PDF; tecgonic simply makes it callable from Go.
 - [wazero](https://wazero.io/) — a zero-dependency WebAssembly runtime for Go. wazero makes it practical to embed the Tectonic WASM binary in a pure-Go library with no CGo and no external dependencies.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -18,6 +18,12 @@ import (
 	"time"
 )
 
+// DefaultBundleURL is the bundle PrepareBundle downloads when WithBundleURL is
+// not set: the Tectonic default TeX Live bundle, version 33, served from a
+// third-party mirror. The v33 artifact is immutable (a new TeX Live cut is
+// published under a new version), so it is safe to pin with WithExpectedSHA256 —
+// obtain the digest by downloading the archive once and hashing the raw stream,
+// or read it back from a prepared bundle with ReadBundleInfo.
 const DefaultBundleURL = "https://relay.fullyjustified.net/default_bundle_v33.tar"
 
 // manifestName is the completion marker written atomically as the last step of
