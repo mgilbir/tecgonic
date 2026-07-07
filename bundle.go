@@ -264,6 +264,10 @@ func downloadAndExtract(ctx context.Context, client *http.Client, bundleURL, des
 // a custom bundle whose structure the flattening would silently corrupt.
 func extractTar(r io.Reader, destDir string, progress io.Writer) (int, error) {
 	tr := tar.NewReader(r)
+	// Reused across entries so a ~134k-file bundle does not allocate a fresh
+	// entry buffer (and gzip reader) per entry.
+	var buf bytes.Buffer
+	var gr *gzip.Reader
 	seen := make(map[string]struct{})
 	files := 0
 	for {
@@ -286,29 +290,19 @@ func extractTar(r io.Reader, destDir string, progress io.Writer) (int, error) {
 		seen[name] = struct{}{}
 		destPath := filepath.Join(destDir, name)
 
-		// Read the full entry into memory so we can attempt gzip decompression.
-		entryData, err := io.ReadAll(tr)
-		if err != nil {
+		// Buffer the entry into a reused buffer, then decide how to write it.
+		// Most entries are individually gzipped; metadata entries (SVNREV,
+		// SHA256SUM) are stored raw, as can be binary files (e.g. a .tfm) whose
+		// first bytes happen to match the gzip magic — so decompression is
+		// attempted and the raw bytes are used when the gzip header is invalid.
+		// The reused buffer avoids a fresh allocation for each of ~134k entries.
+		buf.Reset()
+		if _, err := io.Copy(&buf, tr); err != nil {
 			return files, fmt.Errorf("tecgonic: reading entry %s: %w", name, err)
 		}
-
-		// Try gzip decompression; fall back to raw content for metadata entries.
-		var reader io.Reader
-		gr, gzErr := gzip.NewReader(bytes.NewReader(entryData))
-		if gzErr == nil {
-			reader = gr
-		} else {
-			reader = bytes.NewReader(entryData)
-		}
-
-		if err := writeFile(destPath, reader); err != nil {
-			if gr != nil {
-				_ = gr.Close()
-			}
+		src := decompressor(buf.Bytes(), &gr)
+		if err := writeFile(destPath, src); err != nil {
 			return files, fmt.Errorf("tecgonic: writing %s: %w", name, err)
-		}
-		if gr != nil {
-			_ = gr.Close()
 		}
 
 		files++
@@ -321,6 +315,29 @@ func extractTar(r io.Reader, destDir string, progress io.Writer) (int, error) {
 		_, _ = fmt.Fprintf(progress, "  Extracted %d files (done)\n", files)
 	}
 	return files, nil
+}
+
+// decompressor returns a reader over data, transparently gunzipping it when it
+// is a valid gzip stream. grp holds a reused *gzip.Reader (created on first use)
+// to avoid a per-entry allocation. When data is not a valid gzip stream —
+// including raw entries whose bytes coincidentally begin with the gzip magic —
+// the raw bytes are returned unchanged.
+func decompressor(data []byte, grp **gzip.Reader) io.Reader {
+	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+		return bytes.NewReader(data)
+	}
+	if *grp == nil {
+		gr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return bytes.NewReader(data)
+		}
+		*grp = gr
+		return gr
+	}
+	if err := (*grp).Reset(bytes.NewReader(data)); err != nil {
+		return bytes.NewReader(data)
+	}
+	return *grp
 }
 
 // validateExtraction checks that the staging directory holds a plausible
