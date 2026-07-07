@@ -3,8 +3,10 @@ package tecgonic
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -198,5 +200,29 @@ func TestGenerateFormatNoDir(t *testing.T) {
 
 	if err := c.GenerateFormat(ctx, ""); err == nil {
 		t.Fatal("expected error when no bundle dir is available, got nil")
+	}
+}
+
+// TestGenerateFormatValidatesBundleDir covers audit C3: GenerateFormat must
+// reject a nonexistent bundle dir up front with a config-shaped error (mirroring
+// Compile), not run the engine against a phantom mount and return an *EngineError.
+func TestGenerateFormatValidatesBundleDir(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	err = c.GenerateFormat(ctx, filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Fatal("expected error for a nonexistent bundle dir, got nil")
+	}
+	if !strings.Contains(err.Error(), "bundle directory") {
+		t.Errorf("error does not mention the bundle directory: %v", err)
+	}
+	var eng *EngineError
+	if errors.As(err, &eng) {
+		t.Errorf("a typo'd bundle dir surfaced as *EngineError, want a plain config error: %v", err)
 	}
 }
