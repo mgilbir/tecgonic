@@ -176,6 +176,93 @@ func TestPrepareBundleSkipsWhenComplete(t *testing.T) {
 	}
 }
 
+func TestPrepareBundleReDownloadsOnURLChange(t *testing.T) {
+	body := syntheticBundle()
+	hitsA, hitsB := 0, 0
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsA++
+		_, _ = w.Write(body)
+	}))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB++
+		_, _ = w.Write(body)
+	}))
+	defer srvB.Close()
+
+	dest := filepath.Join(t.TempDir(), "bundle")
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srvA.URL)); err != nil {
+		t.Fatalf("PrepareBundle (A): %v", err)
+	}
+	// A different URL over an existing bundle must re-download, not silently keep
+	// whatever is on disk (audit C3).
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srvB.URL)); err != nil {
+		t.Fatalf("PrepareBundle (B): %v", err)
+	}
+	if hitsB != 1 {
+		t.Errorf("changing the URL did not re-download: srvB hits = %d, want 1", hitsB)
+	}
+	info, err := ReadBundleInfo(dest)
+	if err != nil {
+		t.Fatalf("ReadBundleInfo: %v", err)
+	}
+	if info.URL != srvB.URL {
+		t.Errorf("recorded URL = %q, want %q", info.URL, srvB.URL)
+	}
+}
+
+func TestPrepareBundleEnforcesPinAgainstExistingBundle(t *testing.T) {
+	body := syntheticBundle()
+	srv := serveBytes(t, body)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "bundle")
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
+		t.Fatalf("PrepareBundle: %v", err)
+	}
+
+	// A pin that disagrees with the bundle already on disk must not be silently
+	// ignored: it re-downloads and the fresh stream fails verification (audit C3).
+	wrong := strings.Repeat("a", 64)
+	err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL), WithExpectedSHA256(wrong))
+	if err == nil {
+		t.Fatal("expected a mismatch error when pinning a digest the bundle does not match, got nil")
+	}
+	if !strings.Contains(err.Error(), "mismatch") {
+		t.Errorf("error does not report a digest mismatch: %v", err)
+	}
+}
+
+func TestReadBundleInfo(t *testing.T) {
+	body := syntheticBundle()
+	srv := serveBytes(t, body)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "bundle")
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
+		t.Fatalf("PrepareBundle: %v", err)
+	}
+
+	info, err := ReadBundleInfo(dest)
+	if err != nil {
+		t.Fatalf("ReadBundleInfo: %v", err)
+	}
+	if info.URL != srv.URL {
+		t.Errorf("URL = %q, want %q", info.URL, srv.URL)
+	}
+	if info.FileCount < minBundleFiles {
+		t.Errorf("FileCount = %d, want >= %d", info.FileCount, minBundleFiles)
+	}
+	if len(info.SHA256) != 64 {
+		t.Errorf("SHA256 = %q, want a 64-char hex digest", info.SHA256)
+	}
+
+	// No bundle → error.
+	if _, err := ReadBundleInfo(t.TempDir()); err == nil {
+		t.Error("expected error reading bundle info from an empty dir")
+	}
+}
+
 func TestPrepareBundleForceReextractsClearingStale(t *testing.T) {
 	body := syntheticBundle()
 	srv := serveBytes(t, body)

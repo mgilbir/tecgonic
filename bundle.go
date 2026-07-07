@@ -36,13 +36,42 @@ const sentinelFile = "latex.ltx"
 const minBundleFiles = 100
 
 // bundleManifest records what was extracted so that a later run can tell a
-// complete bundle from a partial one, and so callers can see the bundle's
-// identity.
+// complete bundle from a partial one, decide whether the bundle on disk is the
+// one now being requested (see bundleComplete), and expose the bundle's identity
+// to callers (see ReadBundleInfo).
 type bundleManifest struct {
 	BundleURL string `json:"bundle_url"`
 	FileCount int    `json:"file_count"`
 	// SHA256 is the hex-encoded digest of the raw downloaded tar stream.
 	SHA256 string `json:"sha256"`
+}
+
+// BundleInfo is the recorded identity of an extracted bundle, returned by
+// ReadBundleInfo.
+type BundleInfo struct {
+	// URL is the download URL the bundle was fetched from, or "" for a bundle
+	// adopted from an older tecgonic that recorded no URL.
+	URL string
+	// FileCount is the number of files the extraction wrote.
+	FileCount int
+	// SHA256 is the hex-encoded SHA-256 of the downloaded tar stream, or "" for a
+	// legacy adopted bundle.
+	SHA256 string
+}
+
+// ReadBundleInfo returns the recorded identity of the bundle in destDir. It
+// fails if destDir holds no complete bundle (no manifest) or the manifest cannot
+// be read, so a nil error also confirms the directory is a usable bundle.
+func ReadBundleInfo(destDir string) (BundleInfo, error) {
+	data, err := os.ReadFile(filepath.Join(destDir, manifestName))
+	if err != nil {
+		return BundleInfo{}, fmt.Errorf("tecgonic: reading bundle manifest: %w", err)
+	}
+	var m bundleManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return BundleInfo{}, fmt.Errorf("tecgonic: parsing bundle manifest: %w", err)
+	}
+	return BundleInfo{URL: m.BundleURL, FileCount: m.FileCount, SHA256: m.SHA256}, nil
 }
 
 type prepareBundleConfig struct {
@@ -193,9 +222,12 @@ const tarTrailerBytes = 2 * 512
 // previously generated latex.fmt, which is derived state keyed to the bundle).
 //
 // The download URL defaults to DefaultBundleURL; override it with WithBundleURL.
-// If destDir already holds a complete bundle and WithForce is not set, the
-// download is skipped. After extraction, call Compiler.GenerateFormat to
-// generate the latex.fmt format file.
+// If destDir already holds a complete bundle whose recorded URL matches the
+// requested one — and, when WithExpectedSHA256 is set, whose recorded digest
+// matches the pin — the download is skipped. A different URL or a mismatched pin
+// re-downloads (as does WithForce); a bundle adopted from an older tecgonic
+// records no URL or digest and is trusted as-is. After extraction, call
+// Compiler.GenerateFormat to generate the latex.fmt format file.
 func PrepareBundle(ctx context.Context, destDir string, opts ...PrepareBundleOption) error {
 	var cfg prepareBundleConfig
 	for _, o := range opts {
@@ -219,8 +251,8 @@ func PrepareBundle(ctx context.Context, destDir string, opts ...PrepareBundleOpt
 		client = http.DefaultClient
 	}
 
-	// Fast path: a complete bundle is already present.
-	if !cfg.force && bundleComplete(destDir) {
+	// Fast path: the complete bundle already present is the one being requested.
+	if !cfg.force && bundleComplete(destDir, bundleURL, cfg.expectSHA256) {
 		return nil
 	}
 
@@ -264,14 +296,37 @@ func PrepareBundle(ctx context.Context, destDir string, opts ...PrepareBundleOpt
 	return nil
 }
 
-// bundleComplete reports whether destDir holds a complete, usable bundle.
+// bundleComplete reports whether destDir holds a complete, usable bundle that is
+// the one now being requested: its manifest is present and readable, its
+// recorded URL matches wantURL, and — when wantDigest is set — its recorded
+// digest matches. A URL change or a pin mismatch makes it report false so the
+// bundle is re-downloaded, turning WithBundleURL and WithExpectedSHA256 into the
+// declarative statements their shape implies (audit C3).
 //
-// Completion is authoritatively marked by the manifest file. A bundle extracted
-// by an older version of tecgonic has no manifest; if such a directory still
-// looks complete (sentinel file present and enough files), it is adopted by
-// writing a manifest, so an existing good bundle is not needlessly re-downloaded.
-func bundleComplete(destDir string) bool {
-	if _, err := os.Stat(filepath.Join(destDir, manifestName)); err == nil {
+// A bundle extracted by an older tecgonic has no manifest; if such a directory
+// still looks complete (sentinel present and enough files), it is adopted by
+// writing a manifest. An adopted or legacy bundle records no URL or digest, so
+// those comparisons are skipped for it — an existing good bundle is trusted
+// as-is rather than needlessly re-downloaded.
+func bundleComplete(destDir, wantURL, wantDigest string) bool {
+	data, err := os.ReadFile(filepath.Join(destDir, manifestName))
+	if err == nil {
+		var m bundleManifest
+		if json.Unmarshal(data, &m) != nil {
+			return false // unreadable manifest: re-extract rather than trust it
+		}
+		// A recorded URL that differs from the requested one means the caller now
+		// wants a different bundle. An empty recorded URL is a legacy/adopted
+		// bundle, for which the check is skipped.
+		if m.BundleURL != "" && m.BundleURL != wantURL {
+			return false
+		}
+		// A pinned digest that disagrees with what was recorded means the bundle on
+		// disk is not the one the caller pinned; re-download so the pin is enforced
+		// against a fresh stream. An empty recorded digest is skipped as legacy.
+		if wantDigest != "" && m.SHA256 != "" && !strings.EqualFold(m.SHA256, wantDigest) {
+			return false
+		}
 		return true
 	}
 	// Legacy adoption: a pre-manifest bundle that still looks complete.
