@@ -146,7 +146,7 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 	fsConfig := wazero.NewFSConfig().
 		WithDirMount(outputDir, "/output").
 		WithReadOnlyDirMount(bundleDir, "/bundle").
-		WithDirMount(fontsDir, "/fonts").
+		WithReadOnlyDirMount(fontsDir, "/fonts").
 		WithDirMount(cacheDir, "/cache")
 
 	modConfig := wazero.NewModuleConfig().
@@ -226,6 +226,13 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 // "src/paper.tex") and must exist in fsys; validity of the path is the
 // responsibility of the fsys provider. The output PDF is named after its
 // basename, so both "paper.tex" and "src/paper.tex" produce "paper.pdf".
+//
+// fsys defines the document's entire input visibility: the module can read
+// exactly what fsys serves, nothing else. That also makes it a trust
+// boundary the caller owns — note in particular that os.DirFS follows
+// symbolic links, including links pointing outside its root, so a directory
+// containing untrusted symlinks can expose more than the directory itself.
+// Use an in-memory fs.FS (or fs.Sub of a vetted tree) for untrusted input.
 //
 // References inside the document resolve relative to the main source's own
 // directory, mirroring how a TeX engine treats the file you hand it. If the
@@ -323,7 +330,7 @@ func (c *Compiler) Compile(ctx context.Context, fsys fs.FS, mainName string, opt
 		WithFSMount(fsys, "/input").
 		WithDirMount(outputDir, "/output").
 		WithReadOnlyDirMount(cfg.bundleDir, "/bundle").
-		WithDirMount(fontsDir, "/fonts").
+		WithReadOnlyDirMount(fontsDir, "/fonts").
 		WithDirMount(cacheDir, "/cache")
 
 	modConfig := wazero.NewModuleConfig().
