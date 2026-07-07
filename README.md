@@ -57,8 +57,8 @@ func run() error {
 		return err
 	}
 
-	// Compile LaTeX to PDF.
-	pdf, err := compiler.Compile(ctx, []byte(`\documentclass{article}
+	// Compile a single self-contained source to PDF.
+	pdf, err := compiler.CompileSource(ctx, []byte(`\documentclass{article}
 \begin{document}
 Hello, World!
 \end{document}
@@ -71,6 +71,26 @@ Hello, World!
 ```
 
 See [examples/simple](examples/simple) for a complete runnable example.
+
+## Multi-file documents
+
+`CompileSource` handles a single self-contained source. For documents that pull
+in other files — `\input`, `\includegraphics`, `.bib`, or custom `.cls`/`.sty` —
+use `Compile` with any `fs.FS` and the name of the main source within it:
+
+```go
+fsys := os.DirFS("/path/to/project") // or embed.FS, fstest.MapFS, fs.Sub(...)
+pdf, err := compiler.Compile(ctx, fsys, "paper.tex")
+```
+
+The filesystem is served to the engine read-only and is never written to the
+host; it defines the document's entire input visibility, so it doubles as a
+trust boundary you control. References resolve relative to the main source's own
+directory (a main source at `src/paper.tex` reads `\input{intro}` as
+`src/intro.tex`), and the output PDF is named after the basename (`paper.pdf`).
+
+Because `os.DirFS` follows symlinks out of its root, prefer an in-memory `fs.FS`
+(or `fs.Sub` of a vetted tree) for untrusted input.
 
 ## WASM compilation cache
 
@@ -140,7 +160,7 @@ or "page X of Y" counters, you can skip rerun detection and roughly halve
 compilation time:
 
 ```go
-pdf, err := compiler.Compile(ctx, tex, tecgonic.WithMaxPasses(1))
+pdf, err := compiler.CompileSource(ctx, tex, tecgonic.WithMaxPasses(1))
 ```
 
 Measured on the 40-row `longtblr` benchmark document (M1 Pro): 17.4 s default
@@ -158,7 +178,7 @@ seed just triggers the usual reruns, never wrong output.
 
 ```go
 // One state directory per logical document.
-pdf, err := compiler.Compile(ctx, tex, tecgonic.WithStateDir(stateDir))
+pdf, err := compiler.CompileSource(ctx, tex, tecgonic.WithStateDir(stateDir))
 ```
 
 ```bash
