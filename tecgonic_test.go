@@ -115,6 +115,46 @@ func TestCompileError(t *testing.T) {
 	t.Logf("Got expected EngineError (kind %s, exit code %d)", engErr.Kind, engErr.ExitCode)
 }
 
+// TestCompileForgedSetupMarkerStaysTexError is the end-to-end regression for
+// audit 2026-07-07 C1: a document that references a missing file whose name
+// embeds a setup-failure marker used to have its own TeX error relabeled as an
+// operational KindEngine fault (which a service routes to on-call), because the
+// engine echoes the marker into a "File `...' not found" line and the classifier
+// matched setup markers anywhere in the log. The failure must stay a KindTexError
+// routed back to the document author.
+func TestCompileForgedSetupMarkerStaysTexError(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	// Each name is a real setup-failure marker; \input of a missing file echoes it
+	// verbatim into the engine's error line.
+	for _, marker := range []string{
+		"failed to find a pre-opened file descriptor",
+		"open of input latex failed",
+	} {
+		t.Run(marker, func(t *testing.T) {
+			tex := []byte("\\documentclass{article}\n\\begin{document}\n\\input{" + marker + "}\n\\end{document}\n")
+			_, err := c.CompileSource(ctx, tex)
+			if err == nil {
+				t.Fatal("expected a compile error for the missing \\input, got nil")
+			}
+			var eng *EngineError
+			if !errors.As(err, &eng) {
+				t.Fatalf("expected *EngineError, got %T: %v", err, err)
+			}
+			if !eng.IsTexError() {
+				t.Errorf("document error with a forged marker classified as %s, want tex-error; a document must not be able to forge an operational fault", eng.Kind)
+			}
+		})
+	}
+}
+
 func TestGenerateFormat(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()
