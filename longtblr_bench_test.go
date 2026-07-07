@@ -57,7 +57,7 @@ func BenchmarkCompileLongtblr(b *testing.B) {
 
 		b.ResetTimer()
 		for b.Loop() {
-			if _, err := c.Compile(ctx, doc); err != nil {
+			if _, err := c.CompileSource(ctx, doc); err != nil {
 				b.Fatalf("Compile: %v", err)
 			}
 		}
@@ -93,7 +93,7 @@ func BenchmarkCompileSinglePass(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := c.Compile(ctx, doc, WithMaxPasses(1)); err != nil {
+		if _, err := c.CompileSource(ctx, doc, WithMaxPasses(1)); err != nil {
 			b.Fatalf("Compile: %v", err)
 		}
 	}
@@ -123,13 +123,13 @@ func BenchmarkCompileWarmAux(b *testing.B) {
 
 	stateDir := b.TempDir()
 	// Seed the state with one cold compile outside the timer.
-	if _, err := c.Compile(ctx, doc, WithStateDir(stateDir)); err != nil {
+	if _, err := c.CompileSource(ctx, doc, WithStateDir(stateDir)); err != nil {
 		b.Fatalf("Compile (seed): %v", err)
 	}
 
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := c.Compile(ctx, doc, WithStateDir(stateDir)); err != nil {
+		if _, err := c.CompileSource(ctx, doc, WithStateDir(stateDir)); err != nil {
 			b.Fatalf("Compile: %v", err)
 		}
 	}
@@ -156,7 +156,7 @@ Hello, World!
 
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := c.Compile(ctx, doc); err != nil {
+		if _, err := c.CompileSource(ctx, doc); err != nil {
 			b.Fatalf("Compile: %v", err)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"testing/fstest"
 )
 
 func bundleDir(tb testing.TB) string {
@@ -35,7 +36,7 @@ Hello, World!
 `)
 
 	var stderr bytes.Buffer
-	pdf, err := c.Compile(ctx, tex, WithStderr(&stderr))
+	pdf, err := c.CompileSource(ctx, tex, WithStderr(&stderr))
 	if err != nil {
 		t.Fatalf("Compile: %v\nstderr: %s", err, stderr.String())
 	}
@@ -64,7 +65,7 @@ func TestCompileMultiple(t *testing.T) {
 Test document number ` + string(rune('1'+i)) + `.
 \end{document}
 `)
-		pdf, err := c.Compile(ctx, tex)
+		pdf, err := c.CompileSource(ctx, tex)
 		if err != nil {
 			t.Fatalf("Compile #%d: %v", i+1, err)
 		}
@@ -91,7 +92,7 @@ func TestCompileError(t *testing.T) {
 \end{document}
 `)
 
-	_, err = c.Compile(ctx, tex)
+	_, err = c.CompileSource(ctx, tex)
 	if err == nil {
 		t.Fatal("expected error for invalid TeX, got nil")
 	}
@@ -149,7 +150,7 @@ Hello
 \end{document}
 `)
 
-	_, err = c.Compile(ctx, tex)
+	_, err = c.CompileSource(ctx, tex)
 	if err == nil {
 		t.Fatal("expected error when no bundle dir set, got nil")
 	}
@@ -181,7 +182,7 @@ func TestCompileConcurrent(t *testing.T) {
 Concurrent document %d.
 \end{document}
 `, i))
-			pdfs[i], errs[i] = c.Compile(ctx, tex)
+			pdfs[i], errs[i] = c.CompileSource(ctx, tex)
 		}(i)
 	}
 	wg.Wait()
@@ -212,7 +213,7 @@ Hello
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	pdf, err := c.Compile(ctx, tex)
+	pdf, err := c.CompileSource(ctx, tex)
 	_ = c.Close(ctx)
 	if err != nil {
 		t.Fatalf("Compile under a generous memory limit: %v", err)
@@ -228,7 +229,7 @@ Hello
 		t.Fatalf("New (tiny limit): %v", err)
 	}
 	defer func() { _ = c2.Close(ctx) }()
-	if _, err := c2.Compile(ctx, tex); err == nil {
+	if _, err := c2.CompileSource(ctx, tex); err == nil {
 		t.Error("expected compile to fail under a 16 MiB memory limit, got nil")
 	}
 }
@@ -252,7 +253,7 @@ Hello.
 `)
 
 	var stderr bytes.Buffer
-	pdf, err := c.Compile(ctx, tex, WithMaxPasses(1), WithStderr(&stderr))
+	pdf, err := c.CompileSource(ctx, tex, WithMaxPasses(1), WithStderr(&stderr))
 	if err != nil {
 		t.Fatalf("Compile: %v\nstderr: %s", err, stderr.String())
 	}
@@ -288,7 +289,7 @@ Content.
 `)
 
 	var stderr bytes.Buffer
-	pdf, err := c.Compile(ctx, tex, WithStderr(&stderr))
+	pdf, err := c.CompileSource(ctx, tex, WithStderr(&stderr))
 	if err != nil {
 		t.Fatalf("Compile: %v\nstderr: %s", err, stderr.String())
 	}
@@ -319,7 +320,7 @@ Content.
 	stateDir := t.TempDir()
 
 	var stderr1 bytes.Buffer
-	pdf1, err := c.Compile(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr1))
+	pdf1, err := c.CompileSource(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr1))
 	if err != nil {
 		t.Fatalf("Compile (cold): %v\nstderr: %s", err, stderr1.String())
 	}
@@ -331,7 +332,7 @@ Content.
 	}
 
 	var stderr2 bytes.Buffer
-	pdf2, err := c.Compile(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr2))
+	pdf2, err := c.CompileSource(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr2))
 	if err != nil {
 		t.Fatalf("Compile (warm): %v\nstderr: %s", err, stderr2.String())
 	}
@@ -373,19 +374,19 @@ Content.
 	stateDir := t.TempDir()
 
 	// Populate the state dir with v1's feedback data.
-	if _, err := c.Compile(ctx, v1, WithStateDir(stateDir)); err != nil {
+	if _, err := c.CompileSource(ctx, v1, WithStateDir(stateDir)); err != nil {
 		t.Fatalf("Compile (v1): %v", err)
 	}
 
 	// Ground truth: v2 compiled cold, no state involved.
-	want, err := c.Compile(ctx, v2)
+	want, err := c.CompileSource(ctx, v2)
 	if err != nil {
 		t.Fatalf("Compile (v2 cold): %v", err)
 	}
 
 	// v2 compiled against v1's stale state must produce identical output.
 	var stderr bytes.Buffer
-	got, err := c.Compile(ctx, v2, WithStateDir(stateDir), WithStderr(&stderr))
+	got, err := c.CompileSource(ctx, v2, WithStateDir(stateDir), WithStderr(&stderr))
 	if err != nil {
 		t.Fatalf("Compile (v2 stale seed): %v\nstderr: %s", err, stderr.String())
 	}
@@ -416,7 +417,7 @@ Hello
 \end{document}
 `)
 
-	_, err = c.Compile(ctx, tex)
+	_, err = c.CompileSource(ctx, tex)
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
@@ -469,4 +470,179 @@ func BenchmarkNew(b *testing.B) {
 			_ = c.Close(ctx)
 		}
 	})
+}
+
+// --- Multi-file input (fs.FS) feature tests ---
+
+func TestCompileWithInputFS(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	fsys := fstest.MapFS{
+		"paper.tex": &fstest.MapFile{Data: []byte(`\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\input{sections/content.tex}
+\includegraphics[width=1cm]{images/pixel.png}
+\end{document}
+`)},
+		"sections/content.tex": &fstest.MapFile{Data: []byte("Hello from an input FS.\n")},
+		"images/pixel.png":     &fstest.MapFile{Data: onePixelPNG()},
+	}
+
+	var stderr bytes.Buffer
+	pdf, err := c.Compile(ctx, fsys, "paper.tex", WithStderr(&stderr))
+	if err != nil {
+		t.Fatalf("Compile: %v\nstderr: %s", err, stderr.String())
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("output is not a PDF")
+	}
+}
+
+func TestCompileMainInSubdir(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	// The main source lives in a subdirectory; an \input alongside it resolves
+	// relative to the main source's own directory. The output PDF name is
+	// derived from the basename, so this produces "paper.pdf".
+	fsys := fstest.MapFS{
+		"src/paper.tex": &fstest.MapFile{Data: []byte(`\documentclass{article}
+\begin{document}
+\input{body.tex}
+\end{document}
+`)},
+		"src/body.tex": &fstest.MapFile{Data: []byte("Main source in a subdirectory.\n")},
+	}
+
+	pdf, err := c.Compile(ctx, fsys, "src/paper.tex")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatalf("output is not a PDF")
+	}
+}
+
+func TestCompileRejectsMissingMain(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	fsys := fstest.MapFS{"other.tex": &fstest.MapFile{Data: []byte("not the entry point")}}
+	if _, err := c.Compile(ctx, fsys, "paper.tex"); err == nil {
+		t.Fatal("expected error when main source is absent from input fs, got nil")
+	}
+}
+
+func TestCompileRejectsInvalidMainName(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	fsys := fstest.MapFS{"main.tex": &fstest.MapFile{Data: []byte("x")}}
+
+	// Invalid or non-resolving main names must be rejected: empty, the root
+	// directory, parent escapes, and absolute paths all fail fs.Stat.
+	for label, name := range map[string]string{
+		"empty":         "",
+		"directory":     ".",
+		"parent escape": "../main.tex",
+		"absolute":      "/main.tex",
+	} {
+		t.Run(label, func(t *testing.T) {
+			if _, err := c.Compile(ctx, fsys, name); err == nil {
+				t.Fatalf("expected error for invalid main name %q, got nil", name)
+			}
+		})
+	}
+}
+
+// TestCompileStateDirWithInputFS covers WithStateDir on a multi-file fs.FS with
+// the main source in a subdirectory: state files are named after the main
+// source's basename and overlaid next to it, without touching the caller's fs.
+func TestCompileStateDirWithInputFS(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	fsys := fstest.MapFS{
+		"src/paper.tex": &fstest.MapFile{Data: []byte(`\documentclass{article}
+\begin{document}
+See section \ref{sec:later} for details.
+\input{body.tex}
+\end{document}
+`)},
+		"src/body.tex": &fstest.MapFile{Data: []byte("\\section{Later}\\label{sec:later}\nContent.\n")},
+	}
+
+	stateDir := t.TempDir()
+
+	var stderr1 bytes.Buffer
+	pdf1, err := c.Compile(ctx, fsys, "src/paper.tex", WithStateDir(stateDir), WithStderr(&stderr1))
+	if err != nil {
+		t.Fatalf("Compile (cold): %v\nstderr: %s", err, stderr1.String())
+	}
+	if !bytes.Contains(stderr1.Bytes(), []byte("running TeX pass 2")) {
+		t.Errorf("cold compile should need a second pass, stderr: %s", stderr1.String())
+	}
+	// State files are named after the main source's basename.
+	if _, err := os.Stat(stateDir + "/paper.aux"); err != nil {
+		t.Fatalf("state dir has no paper.aux after cold compile: %v", err)
+	}
+
+	var stderr2 bytes.Buffer
+	pdf2, err := c.Compile(ctx, fsys, "src/paper.tex", WithStateDir(stateDir), WithStderr(&stderr2))
+	if err != nil {
+		t.Fatalf("Compile (warm): %v\nstderr: %s", err, stderr2.String())
+	}
+	if bytes.Contains(stderr2.Bytes(), []byte("running TeX pass 2")) {
+		t.Errorf("warm compile should converge in one pass, stderr: %s", stderr2.String())
+	}
+	if !bytes.Equal(pdf1, pdf2) {
+		t.Error("warm compile produced different PDF than cold converged compile")
+	}
+}
+
+// onePixelPNG returns a minimal valid 1x1 PNG for the graphics input test.
+func onePixelPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+		0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+		0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+		0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
 }

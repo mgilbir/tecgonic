@@ -81,9 +81,16 @@ func TestIsStateFile(t *testing.T) {
 		"input":            false,
 	}
 	for name, want := range cases {
-		if got := isStateFile(name); got != want {
-			t.Errorf("isStateFile(%q) = %v, want %v", name, got, want)
+		if got := isStateFile(name, "input"); got != want {
+			t.Errorf("isStateFile(%q, \"input\") = %v, want %v", name, got, want)
 		}
+	}
+	// The predicate keys on the document's own basename, not a fixed "input".
+	if !isStateFile("paper.aux", "paper") {
+		t.Error(`isStateFile("paper.aux", "paper") = false, want true`)
+	}
+	if isStateFile("input.aux", "paper") {
+		t.Error(`isStateFile("input.aux", "paper") = true, want false`)
 	}
 }
 
@@ -97,7 +104,7 @@ func TestWithMaxPassesInvalid(t *testing.T) {
 
 	tex := []byte(`\documentclass{article}\begin{document}Hi\end{document}`)
 	for _, n := range []int{0, -1} {
-		_, err := c.Compile(ctx, tex, WithMaxPasses(n))
+		_, err := c.CompileSource(ctx, tex, WithMaxPasses(n))
 		if err == nil {
 			t.Errorf("WithMaxPasses(%d): expected error, got nil", n)
 		}
