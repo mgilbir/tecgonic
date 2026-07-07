@@ -402,7 +402,36 @@ func (c *Compiler) resolveCompileConfig(opts []CompileOption) (compileConfig, er
 	if cfg.bundleDir == "" {
 		return cfg, fmt.Errorf("tecgonic: no bundle directory specified (use WithDefaultBundleDir or WithBundleDir)")
 	}
+	if err := validateBundleDir(cfg.bundleDir); err != nil {
+		return cfg, err
+	}
+	if cfg.fontsDir != "" {
+		if info, err := os.Stat(cfg.fontsDir); err != nil {
+			return cfg, fmt.Errorf("tecgonic: fonts directory %q: %w", cfg.fontsDir, err)
+		} else if !info.IsDir() {
+			return cfg, fmt.Errorf("tecgonic: fonts directory %q is not a directory", cfg.fontsDir)
+		}
+	}
 	return cfg, nil
+}
+
+// validateBundleDir checks that dir exists and holds a generated latex.fmt, so a
+// typo'd path or a bundle that never had GenerateFormat run against it fails with
+// a config-shaped error at the API boundary — instead of the engine mounting a
+// phantom directory (wazero does not check) and aborting mid-compile, a failure
+// that would otherwise be misread as a document error (audit C6/C1).
+func validateBundleDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("tecgonic: bundle directory %q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("tecgonic: bundle directory %q is not a directory", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "latex.fmt")); err != nil {
+		return fmt.Errorf("tecgonic: bundle directory %q has no latex.fmt (run Compiler.GenerateFormat first): %w", dir, err)
+	}
+	return nil
 }
 
 // forEachStateFile invokes fn for each harvested feedback file in stateDir that
