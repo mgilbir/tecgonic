@@ -61,6 +61,16 @@ type boundedBuffer struct {
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
+	// A single write at or beyond the cap evicts everything already buffered, so
+	// keep only p's tail directly — never grow buf to len(buf)+len(p) first, which
+	// would let one huge guest write balloon memory past the cap (audit C15).
+	if b.max > 0 && len(p) >= b.max {
+		b.truncated = true
+		keep := make([]byte, b.max)
+		copy(keep, p[len(p)-b.max:])
+		b.buf = keep
+		return n, nil
+	}
 	b.buf = append(b.buf, p...)
 	if b.max > 0 && len(b.buf) > b.max {
 		b.truncated = true

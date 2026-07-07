@@ -1,6 +1,7 @@
 package tecgonic
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -128,6 +129,63 @@ func TestBoundedBuffer(t *testing.T) {
 	if want := "[earlier tectonic output truncated]\nefghijkl"; got != want {
 		t.Errorf("after overflow: %q, want %q", got, want)
 	}
+}
+
+// TestBoundedBufferHugeWrite checks that a single write far larger than the cap
+// keeps only the tail and does not retain the whole write (audit C15).
+func TestBoundedBufferHugeWrite(t *testing.T) {
+	b := &boundedBuffer{max: 8}
+	p := append(bytes.Repeat([]byte("."), 1000), []byte("12345678")...)
+	if _, err := b.Write(p); err != nil {
+		t.Fatal(err)
+	}
+	if !b.truncated {
+		t.Error("expected truncated=true after an oversized write")
+	}
+	if got := string(b.buf); got != "12345678" {
+		t.Errorf("buf = %q, want the last 8 bytes", got)
+	}
+	// The transient must be bounded: the buffer must not retain all 1008 bytes.
+	if cap(b.buf) > b.max {
+		t.Errorf("buf cap = %d, want <= %d", cap(b.buf), b.max)
+	}
+}
+
+// TestWithMemoryLimitMiBClamps pins the page arithmetic: no panic-inducing page
+// count above the wasm32 ceiling, and no uint32 wraparound at extreme values
+// (audit C4).
+func TestWithMemoryLimitMiBClamps(t *testing.T) {
+	cases := []struct {
+		mib   int
+		pages uint32
+	}{
+		{-5, 0},
+		{0, 0},
+		{1, 16},
+		{1024, 16384},
+		{4096, maxWasmPages},
+		{5000, maxWasmPages},    // previously panicked New (80000 > 65536)
+		{1 << 28, maxWasmPages}, // previously wrapped uint32 to 0 (no limit)
+		{1 << 40, maxWasmPages},
+	}
+	for _, tc := range cases {
+		var cfg compilerConfig
+		WithMemoryLimitMiB(tc.mib)(&cfg)
+		if cfg.memoryLimitPages != tc.pages {
+			t.Errorf("WithMemoryLimitMiB(%d) = %d pages, want %d", tc.mib, cfg.memoryLimitPages, tc.pages)
+		}
+	}
+}
+
+// TestNewLargeMemoryLimitNoPanic guards the C4 regression directly: an oversized
+// limit must not panic inside New.
+func TestNewLargeMemoryLimitNoPanic(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx, WithMemoryLimitMiB(5000))
+	if err != nil {
+		t.Fatalf("New with an oversized memory limit: %v", err)
+	}
+	_ = c.Close(ctx)
 }
 
 func TestGenerateFormatNoDir(t *testing.T) {
