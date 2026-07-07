@@ -104,6 +104,25 @@ func TestWithMaxPassesInvalid(t *testing.T) {
 	}
 }
 
+func TestBoundedBuffer(t *testing.T) {
+	b := &boundedBuffer{max: 8}
+	if _, err := b.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.String(); got != "abc" {
+		t.Errorf("under cap: %q, want \"abc\"", got)
+	}
+	// Overflow keeps the most recent bytes and marks truncation.
+	_, _ = b.Write([]byte("defghijkl")) // total "abcdefghijkl" -> keep last 8
+	if !b.truncated {
+		t.Error("expected truncated=true after overflow")
+	}
+	got := b.String()
+	if want := "[earlier tectonic output truncated]\nefghijkl"; got != want {
+		t.Errorf("after overflow: %q, want %q", got, want)
+	}
+}
+
 func TestGenerateFormatNoDir(t *testing.T) {
 	ctx := context.Background()
 	c, err := New(ctx)
