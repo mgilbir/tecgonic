@@ -12,11 +12,10 @@ import (
 
 func bundleDir(tb testing.TB) string {
 	tb.Helper()
-	dir := os.Getenv("TECGONIC_BUNDLE_DIR")
-	if dir == "" {
-		tb.Skip("TECGONIC_BUNDLE_DIR not set")
+	if testBundleDir == "" {
+		tb.Skip("no bundle available (testdata bundle failed to extract and TECGONIC_BUNDLE_DIR unset)")
 	}
-	return dir
+	return testBundleDir
 }
 
 func TestCompileSimple(t *testing.T) {
@@ -195,6 +194,42 @@ Concurrent document %d.
 		if !bytes.HasPrefix(pdfs[i], []byte("%PDF-")) {
 			t.Errorf("goroutine %d: output is not a PDF", i)
 		}
+	}
+}
+
+func TestCompileMemoryLimit(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	tex := []byte(`\documentclass{article}
+\begin{document}
+Hello
+\end{document}
+`)
+
+	// A generous limit does not disturb a normal compile.
+	c, err := New(ctx, WithDefaultBundleDir(dir), WithMemoryLimitMiB(1024))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pdf, err := c.Compile(ctx, tex)
+	_ = c.Close(ctx)
+	if err != nil {
+		t.Fatalf("Compile under a generous memory limit: %v", err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Fatal("output is not a PDF")
+	}
+
+	// A tiny limit must actually cap memory and fail the compile rather than
+	// being silently ignored.
+	c2, err := New(ctx, WithDefaultBundleDir(dir), WithMemoryLimitMiB(16))
+	if err != nil {
+		t.Fatalf("New (tiny limit): %v", err)
+	}
+	defer func() { _ = c2.Close(ctx) }()
+	if _, err := c2.Compile(ctx, tex); err == nil {
+		t.Error("expected compile to fail under a 16 MiB memory limit, got nil")
 	}
 }
 

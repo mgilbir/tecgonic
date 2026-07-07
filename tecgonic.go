@@ -1,7 +1,6 @@
 package tecgonic
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -40,6 +39,39 @@ func isStateFile(name string) bool {
 	return true
 }
 
+// maxStderrBytes bounds how much of the engine's stderr is retained in memory
+// per compile. A hostile document can emit unbounded diagnostics; keeping the
+// most recent bytes preserves the fatal-error tail (which classification and
+// error messages rely on) while capping memory.
+const maxStderrBytes = 1 << 20 // 1 MiB
+
+// boundedBuffer is an io.Writer that retains at most max bytes, keeping the most
+// recent ones and recording whether earlier output was dropped.
+type boundedBuffer struct {
+	buf       []byte
+	max       int
+	truncated bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	b.buf = append(b.buf, p...)
+	if b.max > 0 && len(b.buf) > b.max {
+		b.truncated = true
+		keep := make([]byte, b.max)
+		copy(keep, b.buf[len(b.buf)-b.max:])
+		b.buf = keep
+	}
+	return n, nil
+}
+
+func (b *boundedBuffer) String() string {
+	if b.truncated {
+		return "[earlier tectonic output truncated]\n" + string(b.buf)
+	}
+	return string(b.buf)
+}
+
 // Compiler compiles LaTeX documents to PDF using the Tectonic engine via WASM.
 // It is safe for concurrent use; each Compile call gets its own WASM instance.
 type Compiler struct {
@@ -62,6 +94,9 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 	// and call, which is ~5x slower on CPU-heavy documents. It is therefore
 	// opt-in via WithContextCancellation().
 	rtConfig := wazero.NewRuntimeConfig().WithCloseOnContextDone(cfg.contextCancellation)
+	if cfg.memoryLimitPages > 0 {
+		rtConfig = rtConfig.WithMemoryLimitPages(cfg.memoryLimitPages)
+	}
 
 	var cache wazero.CompilationCache
 	if cfg.compilationCacheDir != "" {
@@ -154,10 +189,10 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 		}
 	}
 
-	var stderrBuf bytes.Buffer
-	var stderrWriter io.Writer = &stderrBuf
+	stderrBuf := &boundedBuffer{max: maxStderrBytes}
+	var stderrWriter io.Writer = stderrBuf
 	if fmtCfg.stderr != nil {
-		stderrWriter = io.MultiWriter(&stderrBuf, fmtCfg.stderr)
+		stderrWriter = io.MultiWriter(stderrBuf, fmtCfg.stderr)
 	}
 
 	fsConfig := wazero.NewFSConfig().
@@ -302,10 +337,10 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 
 	// Set up stderr capture
-	var stderrBuf bytes.Buffer
-	var stderrWriter io.Writer = &stderrBuf
+	stderrBuf := &boundedBuffer{max: maxStderrBytes}
+	var stderrWriter io.Writer = stderrBuf
 	if cfg.stderr != nil {
-		stderrWriter = io.MultiWriter(&stderrBuf, cfg.stderr)
+		stderrWriter = io.MultiWriter(stderrBuf, cfg.stderr)
 	}
 
 	// Configure filesystem mounts

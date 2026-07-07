@@ -11,6 +11,7 @@ type compilerConfig struct {
 	defaultFontsDir     string
 	compilationCacheDir string
 	contextCancellation bool
+	memoryLimitPages    uint32 // 0 = wazero default (65536 pages = 4 GiB)
 }
 
 // CompilerOption configures a Compiler at creation time.
@@ -54,6 +55,24 @@ func WithCompilationCache(dir string) CompilerOption {
 func WithContextCancellation() CompilerOption {
 	return func(c *compilerConfig) {
 		c.contextCancellation = true
+	}
+}
+
+// WithMemoryLimitMiB caps the WebAssembly linear memory each compilation may
+// allocate. Without it, a single compile can grow to the wasm32 ceiling of
+// 4 GiB, so N concurrent compiles of hostile or pathological documents can
+// exhaust host memory. wazero rounds the limit up to whole 64 KiB pages;
+// values below 1 are ignored (no limit).
+//
+// This bounds only WASM memory. A compilation also writes to on-disk temp
+// directories (its output and cache mounts), which this does not limit; bound
+// untrusted input's disk use at the filesystem or container level.
+func WithMemoryLimitMiB(mib int) CompilerOption {
+	return func(c *compilerConfig) {
+		if mib < 1 {
+			return
+		}
+		c.memoryLimitPages = uint32(mib) * 16 // 1 MiB = 16 * 64 KiB pages
 	}
 }
 
