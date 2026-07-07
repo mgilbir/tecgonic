@@ -108,7 +108,9 @@ directory (a main source at `src/paper.tex` reads `\input{intro}` as
 `src/intro.tex`), and the output PDF is named after the basename (`paper.pdf`).
 
 Because `os.DirFS` follows symlinks out of its root, prefer an in-memory `fs.FS`
-(or `fs.Sub` of a vetted tree) for untrusted input.
+(or `fs.Sub` of a vetted tree) for untrusted input. For the full hardening story
+— the sandbox guarantees plus the CPU, memory, and disk knobs — see
+[docs/untrusted-input.md](docs/untrusted-input.md).
 
 ## Error handling
 
