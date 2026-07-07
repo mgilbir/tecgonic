@@ -410,3 +410,37 @@ func writeFile(path string, r io.Reader) error {
 	}
 	return f.Close()
 }
+
+// writeFileAtomic writes data to path via a temp file in the same directory
+// followed by an atomic rename, so a concurrent reader sees either the previous
+// contents or the complete new contents, never a partial write.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if tmp != "" {
+			_ = os.Remove(tmp) // clean up on failure; no-op once renamed
+		}
+	}()
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	tmp = "" // committed
+	return nil
+}
