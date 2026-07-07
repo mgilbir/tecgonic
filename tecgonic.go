@@ -101,13 +101,20 @@ func (c *Compiler) Close(ctx context.Context) error {
 // GenerateFormat generates the LaTeX format file (latex.fmt) in the bundle directory.
 // This must be called once after extracting a bundle before compilations can succeed.
 // If latex.fmt already exists in bundleDir, this is a no-op.
+//
+// If bundleDir is empty, the compiler's default bundle directory (set with
+// WithDefaultBundleDir) is used, so the directory need not be repeated when it
+// matches the compiler's default.
 func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ...GenerateFormatOption) error {
 	var fmtCfg generateFormatConfig
 	for _, o := range opts {
 		o(&fmtCfg)
 	}
 	if bundleDir == "" {
-		return fmt.Errorf("tecgonic: no bundle directory specified")
+		bundleDir = c.config.defaultBundleDir
+	}
+	if bundleDir == "" {
+		return fmt.Errorf("tecgonic: no bundle directory specified (pass one or use WithDefaultBundleDir)")
 	}
 
 	// Skip if format file already exists
@@ -198,7 +205,11 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 		return fmt.Errorf("tecgonic: reading generated format file: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(bundleDir, "latex.fmt"), fmtData, 0o644); err != nil {
+	// Write atomically: Compile mounts bundleDir read-only and the engine loads
+	// latex.fmt from it, possibly concurrently (or across processes sharing the
+	// bundle). A temp-file-plus-rename ensures a reader sees either no format
+	// file or a complete one, never a torn multi-megabyte write.
+	if err := writeFileAtomic(filepath.Join(bundleDir, "latex.fmt"), fmtData, 0o644); err != nil {
 		return fmt.Errorf("tecgonic: writing format file to bundle dir: %w", err)
 	}
 
