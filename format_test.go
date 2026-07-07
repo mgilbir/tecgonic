@@ -62,6 +62,31 @@ func TestGenerateFormatUsesDefaultDir(t *testing.T) {
 	}
 }
 
+func TestIsStateFile(t *testing.T) {
+	cases := map[string]bool{
+		"input.aux":        true,
+		"input.toc":        true,
+		"input.out":        true,
+		"input.bbl":        true,
+		"input.nav":        true, // beamer
+		"input.snm":        true, // beamer
+		"input.idx":        true, // makeidx
+		"input.run.xml":    true, // biber control file
+		"input.pdf":        false,
+		"input.log":        false,
+		"input.xdv":        false,
+		"input.synctex.gz": false,
+		"input.tex":        false, // the source must never be seeded back
+		"other.aux":        false, // only input.* intermediates
+		"input":            false,
+	}
+	for name, want := range cases {
+		if got := isStateFile(name); got != want {
+			t.Errorf("isStateFile(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestGenerateFormatNoDir(t *testing.T) {
 	ctx := context.Background()
 	c, err := New(ctx)

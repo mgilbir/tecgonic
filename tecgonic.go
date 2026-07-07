@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	// andsifr is a fork of github.com/tetratelabs/wazero carrying compiler
 	// optimizations for tecgonic's workload; the root package keeps the
@@ -18,11 +19,25 @@ import (
 	"github.com/mgilbir/tecgonic/wasm"
 )
 
-// stateFileNames are the TeX feedback files round-tripped by WithStateDir.
-// The WASM module exports them to the output directory after a successful
-// compile; Compile seeds them back into the input directory on the next run.
-var stateFileNames = []string{
-	"input.aux", "input.toc", "input.lof", "input.lot", "input.out", "input.bbl",
+// isStateFile reports whether name is a TeX feedback file worth round-tripping
+// through a state directory (see WithStateDir): an input.* intermediate that a
+// later pass reads back to converge — .aux, .toc, .out, .bbl, beamer's
+// .nav/.snm/.vrb, makeidx's .idx/.ind, glossaries, biber's .run.xml, and so on.
+//
+// Rather than an allowlist (which silently gave beamer and index documents no
+// speedup, audit C20), everything the engine writes to the output directory is
+// harvested except the primary outputs and the source: seeding those back
+// cannot help convergence, and re-seeding the source would clobber a real input.
+func isStateFile(name string) bool {
+	if !strings.HasPrefix(name, "input.") {
+		return false
+	}
+	switch filepath.Ext(name) {
+	case ".pdf", ".log", ".xdv", ".gz", ".tex":
+		// .gz catches input.synctex.gz; .tex is the source document.
+		return false
+	}
+	return true
 }
 
 // Compiler compiles LaTeX documents to PDF using the Tectonic engine via WASM.
@@ -264,9 +279,15 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 
 	// Seed feedback state files from a previous compile of this document so
-	// the engine can converge in a single pass (see WithStateDir).
+	// the engine can converge in a single pass (see WithStateDir). The input
+	// dir is private to this compile, so a plain write suffices here.
 	if cfg.stateDir != "" {
-		for _, name := range stateFileNames {
+		entries, _ := os.ReadDir(cfg.stateDir)
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !isStateFile(name) {
+				continue
+			}
 			data, err := os.ReadFile(filepath.Join(cfg.stateDir, name))
 			if err != nil {
 				continue
@@ -332,16 +353,22 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	}
 
 	// Harvest feedback state files for the next compile (see WithStateDir).
-	// Missing files (older WASM modules, or documents that produce none) are
-	// skipped; state persistence failures are not fatal to the compilation.
+	// Documents that produce none are skipped; state persistence failures are
+	// not fatal to the compilation. Writes are atomic so a concurrent compile
+	// seeding from this directory never reads a half-written file (audit C7).
 	if cfg.stateDir != "" {
 		if err := os.MkdirAll(cfg.stateDir, 0o755); err == nil {
-			for _, name := range stateFileNames {
+			entries, _ := os.ReadDir(outputDir)
+			for _, e := range entries {
+				name := e.Name()
+				if e.IsDir() || !isStateFile(name) {
+					continue
+				}
 				data, err := os.ReadFile(filepath.Join(outputDir, name))
 				if err != nil {
 					continue
 				}
-				_ = os.WriteFile(filepath.Join(cfg.stateDir, name), data, 0o644)
+				_ = writeFileAtomic(filepath.Join(cfg.stateDir, name), data, 0o644)
 			}
 		}
 	}

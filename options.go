@@ -129,8 +129,9 @@ func WithMaxPasses(n int) CompileOption {
 	}
 }
 
-// WithStateDir persists TeX feedback files (.aux, .toc, .lof, .lot, .out,
-// .bbl) in dir across Compile calls. Use one directory per logical document.
+// WithStateDir persists TeX feedback files (.aux, .toc, .out, .bbl, and the
+// analogous intermediates for beamer, indexes, glossaries, and biber) in dir
+// across Compile calls. Use one directory per logical document.
 //
 // TeX resolves cross-references, tables of contents, and page totals by
 // feeding data recorded during one pass into the next, so a cold compile
@@ -141,8 +142,10 @@ func WithMaxPasses(n int) CompileOption {
 //
 // This is always correct: a stale seed (e.g. after editing the document) only
 // causes the usual reruns, never wrong output. The directory is created on
-// first use and updated after each successful compile. Do not share one
-// directory between concurrent Compile calls of different documents.
+// first use and updated (atomically) after each successful compile. Do not
+// share one directory between Compile calls that run concurrently: even for the
+// same document, one call may seed from the directory while another is writing
+// it.
 func WithStateDir(dir string) CompileOption {
 	return func(c *compileConfig) {
 		c.stateDir = dir
