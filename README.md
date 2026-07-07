@@ -16,34 +16,57 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/mgilbir/tecgonic"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	ctx := context.Background()
-	bundleDir := os.Getenv("HOME") + "/.cache/tecgonic/bundle"
-	cacheDir := os.Getenv("HOME") + "/.cache/tecgonic/wasm-cache"
+
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return err
+	}
+	bundleDir := filepath.Join(cache, "tecgonic", "bundle")
+	wasmCacheDir := filepath.Join(cache, "tecgonic", "wasm-cache")
 
 	// Download the TeX bundle (one-time).
-	tecgonic.PrepareBundle(ctx, bundleDir, tecgonic.WithProgress(os.Stderr))
+	if err := tecgonic.PrepareBundle(ctx, bundleDir, tecgonic.WithProgress(os.Stderr)); err != nil {
+		return err
+	}
 
-	// Create compiler and generate format file (one-time).
-	compiler, _ := tecgonic.New(ctx,
+	// Create the compiler and generate the format file (one-time).
+	compiler, err := tecgonic.New(ctx,
 		tecgonic.WithDefaultBundleDir(bundleDir),
-		tecgonic.WithCompilationCache(cacheDir),
+		tecgonic.WithCompilationCache(wasmCacheDir),
 	)
+	if err != nil {
+		return err
+	}
 	defer compiler.Close(ctx)
-	compiler.GenerateFormat(ctx, bundleDir)
+	if err := compiler.GenerateFormat(ctx, ""); err != nil { // "" -> default bundle dir
+		return err
+	}
 
 	// Compile LaTeX to PDF.
-	pdf, _ := compiler.Compile(ctx, []byte(`\documentclass{article}
+	pdf, err := compiler.Compile(ctx, []byte(`\documentclass{article}
 \begin{document}
 Hello, World!
 \end{document}
 `))
-	os.WriteFile("output.pdf", pdf, 0o644)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile("output.pdf", pdf, 0o644)
 }
 ```
 
@@ -172,6 +195,25 @@ Because andsifr is an ordinary dependency (not a `replace` directive),
 applications importing tecgonic as a library get it automatically — no
 changes to your `go.mod` are needed.
 
+## Development
+
+Requires the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.25) or newer.
+
+```bash
+make test   # go test ./...
+make lint   # golangci-lint run ./... (see .golangci.yml)
+```
+
+Tests run with no setup: `TestMain` extracts a small committed bundle
+(`testdata/minibundle.tar.gz` — `article.cls`, Latin Modern, and a prebuilt
+`latex.fmt`, enough for the compile tests) into a temp directory. To run against
+a full bundle instead (more fonts, document classes, and benchmarks), point
+`TECGONIC_BUNDLE_DIR` at an extracted bundle that includes `latex.fmt`:
+
+```bash
+TECGONIC_BUNDLE_DIR=/path/to/bundle go test ./...
+```
+
 ## Building the WASM module
 
 The pre-built WASM artifact is included under `wasm/`. To rebuild it from the Tectonic source:
@@ -180,7 +222,10 @@ The pre-built WASM artifact is included under `wasm/`. To rebuild it from the Te
 make wasm
 ```
 
-This uses Docker to cross-compile Tectonic to `wasm32-wasip1`. See the [Dockerfile](Dockerfile) for details.
+This uses Docker to cross-compile Tectonic to `wasm32-wasip1`. Pin a reproducible
+source revision with `make wasm TECTONIC_REF=<commit-sha>`; changing the ref also
+busts the Docker git-clone cache, so a rebuild after an upstream push picks up the
+new source without needing `--no-cache`. See the [Dockerfile](Dockerfile) for details.
 
 ## Thanks
 
