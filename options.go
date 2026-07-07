@@ -1,6 +1,9 @@
 package tecgonic
 
-import "io"
+import (
+	"fmt"
+	"io"
+)
 
 // compilerConfig holds configuration set once on New().
 type compilerConfig struct {
@@ -78,6 +81,7 @@ type compileConfig struct {
 	output    io.Writer
 	maxPasses int
 	stateDir  string
+	err       error // first invalid-option error, surfaced by Compile
 }
 
 // CompileOption configures a single Compile() call.
@@ -123,8 +127,18 @@ func WithOutput(w io.Writer) CompileOption {
 //
 // Requires a WASM module built with TECTONIC_MAX_PASSES support; older
 // modules ignore this option.
+//
+// n must be at least 1; Compile returns an error for a smaller value rather
+// than silently falling back to the default, so a mis-wired 0 (e.g. an unset
+// config field) is not mistaken for "cap at zero passes".
 func WithMaxPasses(n int) CompileOption {
 	return func(c *compileConfig) {
+		if n < 1 {
+			if c.err == nil {
+				c.err = fmt.Errorf("tecgonic: WithMaxPasses(%d): must be at least 1", n)
+			}
+			return
+		}
 		c.maxPasses = n
 	}
 }

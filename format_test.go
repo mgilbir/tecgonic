@@ -87,6 +87,23 @@ func TestIsStateFile(t *testing.T) {
 	}
 }
 
+func TestWithMaxPassesInvalid(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx, WithDefaultBundleDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}\begin{document}Hi\end{document}`)
+	for _, n := range []int{0, -1} {
+		_, err := c.Compile(ctx, tex, WithMaxPasses(n))
+		if err == nil {
+			t.Errorf("WithMaxPasses(%d): expected error, got nil", n)
+		}
+	}
+}
+
 func TestGenerateFormatNoDir(t *testing.T) {
 	ctx := context.Background()
 	c, err := New(ctx)

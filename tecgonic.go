@@ -241,6 +241,9 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	for _, o := range opts {
 		o(&cfg)
 	}
+	if cfg.err != nil {
+		return nil, cfg.err
+	}
 
 	if cfg.bundleDir == "" {
 		return nil, fmt.Errorf("tecgonic: no bundle directory specified (use WithDefaultBundleDir or WithBundleDir)")
