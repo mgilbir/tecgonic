@@ -5,7 +5,43 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/mgilbir/andsifr/sys"
 )
+
+// TestNewEngineErrorTypedAbort covers the deterministic proc_exit-based path:
+// the engine's typed abort code classifies as a document error, other exit
+// codes as engine faults, and a setup fault reported through the abort code
+// still classifies as an engine fault.
+func TestNewEngineErrorTypedAbort(t *testing.T) {
+	texAbort := sys.NewExitError(texAbortExitCode)
+	otherExit := sys.NewExitError(3)
+
+	cases := []struct {
+		name    string
+		callErr error
+		logs    string
+		want    ErrorKind
+	}{
+		{"tex abort exit code", texAbort, "! Undefined control sequence\nfatal: longjmp called (TeX engine abort)\n", KindTexError},
+		{"tex abort code but setup fault in log", texAbort, "tectonic warning: open of input latex failed\nfatal: longjmp called (TeX engine abort)\n", KindEngine},
+		{"other exit code is engine fault", otherExit, "something unexpected\n", KindEngine},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := newEngineError(tc.callErr, 0, tc.logs)
+			if got.Kind != tc.want {
+				t.Errorf("Kind = %s, want %s", got.Kind, tc.want)
+			}
+		})
+	}
+
+	// A cancellation surfaces as an ExitError too, but must be caught as
+	// KindCancelled before the abort-code check.
+	if got := newEngineError(context.Canceled, 0, "fatal: longjmp called (TeX engine abort)\n"); got.Kind != KindCancelled {
+		t.Errorf("cancellation Kind = %s, want cancelled", got.Kind)
+	}
+}
 
 // TestNewEngineErrorClassification pins how a run's outcome maps to an
 // ErrorKind, including the operational faults that must not be blamed on the
