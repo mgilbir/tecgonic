@@ -72,7 +72,7 @@ pdf, err := compiler.Compile(ctx, fsys, "paper.tex")
 This is opt-in because it is not free: wazero must insert a termination check on
 every loop back-edge and function call, which is **~5× slower** on CPU-heavy
 documents. Enable it precisely when you accept that cost to contain untrusted
-input. (See [performance](#see-also) for the measurement.)
+input. (See [docs/performance.md](performance.md) for the measurement.)
 
 ### 3. Memory — `WithMemoryLimitMiB`
 
@@ -122,6 +122,7 @@ a document cannot forge how its failure is reported:
 
 ## See also
 
-- README: Error handling, Troubleshooting, and the context-cancellation
-  performance trade-off.
+- README: Error handling and Troubleshooting.
+- [docs/performance.md](performance.md): the context-cancellation cost, pass
+  capping, and state seeding.
 - Godoc for `Compile`, `WithMemoryLimitMiB`, and `WithContextCancellation`.
