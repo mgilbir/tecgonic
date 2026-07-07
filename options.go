@@ -58,11 +58,19 @@ func WithContextCancellation() CompilerOption {
 	}
 }
 
+// maxWasmPages is the wasm32 linear-memory ceiling: 65536 pages * 64 KiB = 4 GiB.
+const maxWasmPages = 65536
+
 // WithMemoryLimitMiB caps the WebAssembly linear memory each compilation may
 // allocate. Without it, a single compile can grow to the wasm32 ceiling of
 // 4 GiB, so N concurrent compiles of hostile or pathological documents can
-// exhaust host memory. wazero rounds the limit up to whole 64 KiB pages;
-// values below 1 are ignored (no limit).
+// exhaust host memory. wazero rounds the limit up to whole 64 KiB pages.
+//
+// The effective range is 1..4096 MiB. Values below 1 are ignored (no limit).
+// A value above 4096 is clamped to 4096 (the wasm32 ceiling): a larger cap
+// cannot constrain a 32-bit address space anyway, so clamping delivers exactly
+// what such a request means — "effectively no limit" — instead of panicking, as
+// an unclamped page count above 65536 would (audit C4).
 //
 // This bounds only WASM memory. A compilation also writes to on-disk temp
 // directories (its output and cache mounts), which this does not limit; bound
@@ -72,7 +80,11 @@ func WithMemoryLimitMiB(mib int) CompilerOption {
 		if mib < 1 {
 			return
 		}
-		c.memoryLimitPages = uint32(mib) * 16 // 1 MiB = 16 * 64 KiB pages
+		pages := int64(mib) * 16 // 1 MiB = 16 * 64 KiB pages; int64 avoids overflow
+		if pages > maxWasmPages {
+			pages = maxWasmPages
+		}
+		c.memoryLimitPages = uint32(pages)
 	}
 }
 
