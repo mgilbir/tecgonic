@@ -46,9 +46,9 @@ func main() {
 }
 
 func run(ctx context.Context, bundleDir, wasmCacheDir, output string) error {
-	// Step 1: Download and extract the TeX bundle (~800 MB, skipped if already present).
+	// Step 1: Download and extract the TeX bundle (skipped if already present).
 	fmt.Fprintln(os.Stderr, "Preparing bundle...")
-	if err := tecgonic.PrepareBundle(ctx, bundleDir, "", false, tecgonic.WithProgress(os.Stderr)); err != nil {
+	if err := tecgonic.PrepareBundle(ctx, bundleDir, tecgonic.WithProgress(os.Stderr)); err != nil {
 		return fmt.Errorf("preparing bundle: %w", err)
 	}
 

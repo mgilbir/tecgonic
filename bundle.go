@@ -46,6 +46,8 @@ type bundleManifest struct {
 }
 
 type prepareBundleConfig struct {
+	bundleURL    string
+	force        bool
 	progress     io.Writer
 	client       *http.Client
 	expectSHA256 string
@@ -53,6 +55,22 @@ type prepareBundleConfig struct {
 
 // PrepareBundleOption configures a PrepareBundle call.
 type PrepareBundleOption func(*prepareBundleConfig)
+
+// WithBundleURL overrides the bundle download URL. When unset, DefaultBundleURL
+// is used.
+func WithBundleURL(url string) PrepareBundleOption {
+	return func(c *prepareBundleConfig) {
+		c.bundleURL = url
+	}
+}
+
+// WithForce re-downloads and re-extracts the bundle even when destDir already
+// holds a complete one, replacing it wholesale.
+func WithForce() PrepareBundleOption {
+	return func(c *prepareBundleConfig) {
+		c.force = true
+	}
+}
 
 // WithProgress enables progress reporting to the given writer.
 // Download progress (bytes/percentage) and extraction progress (file count) are reported.
@@ -123,19 +141,21 @@ func (cr *countingHashReader) Read(p []byte) (int, error) {
 // Extraction is atomic: the bundle is unpacked into a temporary staging
 // directory alongside destDir and swapped into place only after it is fully
 // written and validated, so an interrupted or failed run never leaves a partial
-// bundle that a later call mistakes for a complete one. A forced re-extraction
-// replaces destDir wholesale, clearing any stale files (including a previously
-// generated latex.fmt, which is derived state keyed to the bundle).
+// bundle that a later call mistakes for a complete one. WithForce re-extracts,
+// replacing destDir wholesale and clearing any stale files (including a
+// previously generated latex.fmt, which is derived state keyed to the bundle).
 //
-// If destDir already holds a complete bundle and force is false, the download is
-// skipped. After extraction, call Compiler.GenerateFormat to generate the
-// latex.fmt format file.
-func PrepareBundle(ctx context.Context, destDir, bundleURL string, force bool, opts ...PrepareBundleOption) error {
+// The download URL defaults to DefaultBundleURL; override it with WithBundleURL.
+// If destDir already holds a complete bundle and WithForce is not set, the
+// download is skipped. After extraction, call Compiler.GenerateFormat to
+// generate the latex.fmt format file.
+func PrepareBundle(ctx context.Context, destDir string, opts ...PrepareBundleOption) error {
 	var cfg prepareBundleConfig
 	for _, o := range opts {
 		o(&cfg)
 	}
 
+	bundleURL := cfg.bundleURL
 	if bundleURL == "" {
 		bundleURL = DefaultBundleURL
 	}
@@ -145,7 +165,7 @@ func PrepareBundle(ctx context.Context, destDir, bundleURL string, force bool, o
 	}
 
 	// Fast path: a complete bundle is already present.
-	if !force && bundleComplete(destDir) {
+	if !cfg.force && bundleComplete(destDir) {
 		return nil
 	}
 

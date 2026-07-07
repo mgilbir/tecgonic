@@ -87,7 +87,7 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 		return nil, fmt.Errorf("tecgonic: instantiating WASI: %w", err)
 	}
 
-	compiled, err := rt.CompileModule(ctx, wasm.TectonicWASM)
+	compiled, err := rt.CompileModule(ctx, wasm.Module())
 	if err != nil {
 		_ = rt.Close(ctx)
 		closeCache()
