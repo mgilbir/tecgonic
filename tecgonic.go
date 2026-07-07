@@ -3,6 +3,7 @@ package tecgonic
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -154,6 +155,9 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 
 	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, modConfig)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return newEngineError(err, 0, stderrBuf.String())
+		}
 		return fmt.Errorf("tecgonic: instantiating module for format generation: %w", err)
 	}
 	defer func() { _ = mod.Close(ctx) }()
@@ -165,17 +169,10 @@ func (c *Compiler) GenerateFormat(ctx context.Context, bundleDir string, opts ..
 
 	results, callErr := fn.Call(ctx)
 	if callErr != nil {
-		return &CompileError{
-			ExitCode: 2,
-			Logs:     stderrBuf.String(),
-			WasmErr:  callErr,
-		}
+		return newEngineError(callErr, 0, stderrBuf.String())
 	}
 	if len(results) > 0 && results[0] != 0 {
-		return &CompileError{
-			ExitCode: int32(results[0]),
-			Logs:     stderrBuf.String(),
-		}
+		return newEngineError(nil, int32(results[0]), stderrBuf.String())
 	}
 
 	// Find the generated format file in cache and copy to bundle dir
@@ -299,6 +296,9 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 	// Instantiate a fresh module for this compilation
 	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, modConfig)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newEngineError(err, 0, stderrBuf.String())
+		}
 		return nil, fmt.Errorf("tecgonic: instantiating module: %w", err)
 	}
 	defer func() { _ = mod.Close(ctx) }()
@@ -311,21 +311,13 @@ func (c *Compiler) Compile(ctx context.Context, texSource []byte, opts ...Compil
 
 	results, callErr := fn.Call(ctx)
 
-	// Handle WASM trap (callErr != nil)
+	// Classify a trap (callErr != nil) or a non-zero exit code into an
+	// *EngineError: a cancellation, a TeX error, or an engine fault.
 	if callErr != nil {
-		return nil, &CompileError{
-			ExitCode: 2,
-			Logs:     stderrBuf.String(),
-			WasmErr:  callErr,
-		}
+		return nil, newEngineError(callErr, 0, stderrBuf.String())
 	}
-
-	// Handle non-zero exit code
 	if len(results) > 0 && results[0] != 0 {
-		return nil, &CompileError{
-			ExitCode: int32(results[0]),
-			Logs:     stderrBuf.String(),
-		}
+		return nil, newEngineError(nil, int32(results[0]), stderrBuf.String())
 	}
 
 	// Harvest feedback state files for the next compile (see WithStateDir).

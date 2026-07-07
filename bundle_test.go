@@ -268,6 +268,68 @@ func TestPrepareBundleAdoptsLegacyDir(t *testing.T) {
 	}
 }
 
+func TestPrepareBundleTinyAndEmptyEntries(t *testing.T) {
+	// Entries shorter than the 2-byte gzip magic must extract as raw content,
+	// not trip the sniff.
+	entries := []itarEntry{
+		{name: sentinelFile, data: []byte("x"), gzip: true},
+		{name: "one-byte", data: []byte("Z"), gzip: false},
+		{name: "empty", data: []byte(""), gzip: false},
+		{name: "empty-gz", data: []byte(""), gzip: true},
+	}
+	for i := 0; i < minBundleFiles; i++ {
+		entries = append(entries, itarEntry{name: fmt.Sprintf("f%04d.sty", i), data: []byte("content"), gzip: true})
+	}
+	srv := serveBytes(t, buildITAR(entries))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "bundle")
+	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+		t.Fatalf("PrepareBundle: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "one-byte"))
+	if err != nil || string(got) != "Z" {
+		t.Errorf("one-byte entry = %q, %v; want \"Z\"", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "empty")); err != nil || len(got) != 0 {
+		t.Errorf("empty entry = %q, %v; want empty", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "empty-gz")); err != nil || len(got) != 0 {
+		t.Errorf("empty gzip entry = %q, %v; want empty", got, err)
+	}
+}
+
+// TestPrepareBundleRawEntryWithGzipMagic guards the regression where a raw
+// (non-gzipped) binary entry whose first bytes coincidentally match the gzip
+// magic (0x1f 0x8b) — as a real .tfm in the bundle does — must extract verbatim
+// rather than fail as an invalid gzip stream.
+func TestPrepareBundleRawEntryWithGzipMagic(t *testing.T) {
+	// 0x1f 0x8b magic followed by an invalid compression method byte: looks like
+	// gzip at two bytes, is not a valid gzip header.
+	raw := []byte{0x1f, 0x8b, 0x99, 0x01, 0x02, 0x03, 0x04}
+	entries := []itarEntry{
+		{name: sentinelFile, data: []byte("x"), gzip: true},
+		{name: "font.tfm", data: raw, gzip: false},
+	}
+	for i := 0; i < minBundleFiles; i++ {
+		entries = append(entries, itarEntry{name: fmt.Sprintf("f%04d.sty", i), data: []byte("content"), gzip: true})
+	}
+	srv := serveBytes(t, buildITAR(entries))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "bundle")
+	if err := PrepareBundle(context.Background(), dest, srv.URL, false); err != nil {
+		t.Fatalf("PrepareBundle: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "font.tfm"))
+	if err != nil {
+		t.Fatalf("reading raw entry: %v", err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Errorf("raw gzip-magic entry = %v; want verbatim %v", got, raw)
+	}
+}
+
 func TestPrepareBundleHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

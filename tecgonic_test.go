@@ -97,12 +97,20 @@ func TestCompileError(t *testing.T) {
 		t.Fatal("expected error for invalid TeX, got nil")
 	}
 
-	var compErr *CompileError
-	if !errors.As(err, &compErr) {
-		t.Fatalf("expected *CompileError, got %T: %v", err, err)
+	var engErr *EngineError
+	if !errors.As(err, &engErr) {
+		t.Fatalf("expected *EngineError, got %T: %v", err, err)
+	}
+	// A malformed document must classify as a TeX error, not an engine fault,
+	// so callers can route it back to the document author. If this fails with
+	// KindEngine, the WASM longjmp stub is trapping on TeX errors (audit C8)
+	// and the taxonomy is not trustworthy.
+	if !engErr.IsTexError() {
+		t.Errorf("invalid TeX classified as %s (exit code %d), want tex-error; WasmErr=%v",
+			engErr.Kind, engErr.ExitCode, engErr.WasmErr)
 	}
 
-	t.Logf("Got expected CompileError (exit code %d): %s", compErr.ExitCode, compErr.Logs)
+	t.Logf("Got expected EngineError (kind %s, exit code %d)", engErr.Kind, engErr.ExitCode)
 }
 
 func TestGenerateFormat(t *testing.T) {
@@ -377,7 +385,22 @@ Hello
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
-	t.Logf("Got expected error: %v", err)
+	// A caller-initiated cancellation must classify as cancelled, not as an
+	// engine panic (audit C2): a timeout dashboard should not read as a crash.
+	var engErr *EngineError
+	if !errors.As(err, &engErr) {
+		t.Fatalf("expected *EngineError, got %T: %v", err, err)
+	}
+	if !engErr.IsCancelled() {
+		t.Errorf("cancelled compile classified as %s, want cancelled", engErr.Kind)
+	}
+	if engErr.IsEngineFailure() {
+		t.Errorf("cancellation must not report as an engine failure")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false; want true")
+	}
+	t.Logf("Got expected cancellation: %v", err)
 }
 
 func BenchmarkNew(b *testing.B) {
