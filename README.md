@@ -256,6 +256,12 @@ source revision with `make wasm TECTONIC_REF=<commit-sha>`; changing the ref als
 busts the Docker git-clone cache, so a rebuild after an upstream push picks up the
 new source without needing `--no-cache`. See the [Dockerfile](Dockerfile) for details.
 
+The module is built from a fork of Tectonic (`mgilbir/tectonic@wasm`) that adds
+the WASI reactor build. Where that fork comes from, how it tracks upstream, the
+ABI handshake that keeps the module and this library in sync, and the step-by-step
+update procedure are documented in
+**[docs/wasm-provenance.md](docs/wasm-provenance.md)**.
+
 ## Thanks
 
 This project would not be possible without:
