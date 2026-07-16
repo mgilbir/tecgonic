@@ -23,6 +23,12 @@ construction; the other three are bounded by options you opt into.
 - **Per-call isolation.** Every `Compile`/`CompileSource` runs in its own WASM
   instance with its own temp mounts, so concurrent compiles cannot see or
   corrupt each other.
+- **No live clock.** The engine cannot read a running wall clock, so a document
+  cannot measure elapsed time as a side-channel. The date it sees for `\today`
+  (and the PDF timestamp) is a single fixed value tecgonic injects — the current
+  host date by default, or whatever you pass to `WithBuildDate(t)`. Either way the
+  document observes a constant, not a clock; pin a fixed date for reproducible
+  output.
 
 ## The four knobs you set
 

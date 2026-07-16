@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing/fstest"
+	"time"
 
 	// andsifr is a fork of github.com/tetratelabs/wazero carrying compiler
 	// optimizations for tecgonic's workload; the root package keeps the
@@ -164,7 +165,10 @@ func New(ctx context.Context, opts ...CompilerOption) (*Compiler, error) {
 // signatures, the reserved proc_exit abort status (texAbortExitCode), the
 // recognized environment variables, and the guest mount layout. Bump it in
 // lockstep with the module whenever that contract changes.
-const expectedABIVersion = 1
+//
+// ABI 2 added SOURCE_DATE_EPOCH support (the document date, WithBuildDate); an
+// ABI 1 module ignores it and renders 1970, so the handshake must reject it.
+const expectedABIVersion = 2
 
 // verifyABIVersion reads the module's self-reported ABI version and rejects a
 // module this package was not built to drive. The embedded WASM and this
@@ -608,6 +612,20 @@ func (c *Compiler) runEngine(ctx context.Context, cfg compileConfig, docBase, gu
 	if cfg.maxPasses > 0 {
 		modConfig = modConfig.WithEnv("TECTONIC_MAX_PASSES", strconv.Itoa(cfg.maxPasses))
 	}
+
+	// The sandbox has no real clock, so the engine's date (\today and the PDF
+	// timestamp) comes solely from SOURCE_DATE_EPOCH; without it the module
+	// renders 1970. Default to the current host date, overridable per call with
+	// WithBuildDate. A pre-epoch date is clamped to 0 (SOURCE_DATE_EPOCH is a
+	// non-negative count of seconds since 1970).
+	buildEpoch := time.Now().Unix()
+	if cfg.buildDateSet {
+		buildEpoch = cfg.buildDate.Unix()
+	}
+	if buildEpoch < 0 {
+		buildEpoch = 0
+	}
+	modConfig = modConfig.WithEnv("SOURCE_DATE_EPOCH", strconv.FormatInt(buildEpoch, 10))
 
 	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, modConfig)
 	if err != nil {

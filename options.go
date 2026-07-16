@@ -3,6 +3,7 @@ package tecgonic
 import (
 	"fmt"
 	"io"
+	"time"
 )
 
 // compilerConfig holds configuration set once on New().
@@ -106,13 +107,15 @@ func WithGenerateFormatStderr(w io.Writer) GenerateFormatOption {
 
 // compileConfig holds per-call configuration for Compile().
 type compileConfig struct {
-	bundleDir string
-	fontsDir  string
-	stderr    io.Writer
-	output    io.Writer
-	maxPasses int
-	stateDir  string
-	err       error // first invalid-option error, surfaced by Compile
+	bundleDir    string
+	fontsDir     string
+	stderr       io.Writer
+	output       io.Writer
+	maxPasses    int
+	stateDir     string
+	buildDate    time.Time // date for \today and the PDF timestamp
+	buildDateSet bool      // whether WithBuildDate was given (else default to now)
+	err          error     // first invalid-option error, surfaced by Compile
 }
 
 // CompileOption configures a single Compile() call.
@@ -194,5 +197,26 @@ func WithMaxPasses(n int) CompileOption {
 func WithStateDir(dir string) CompileOption {
 	return func(c *compileConfig) {
 		c.stateDir = dir
+	}
+}
+
+// WithBuildDate sets the date the compilation sees as "now": it drives \today,
+// \year/\month/\day, and the PDF's timestamp. Without it, the current host date
+// (at the moment of the call) is used.
+//
+// The WebAssembly sandbox has no real clock, so the date is passed to the engine
+// as a single fixed value (via SOURCE_DATE_EPOCH); the document observes a
+// constant, never a running clock, so this exposes no wall-clock timing
+// side-channel and keeps compilation deterministic within a call. Pin a fixed
+// date here for reproducible output — two compiles of the same document with the
+// same WithBuildDate produce byte-identical PDFs.
+//
+// A time before the Unix epoch (1970) is clamped to the epoch. This requires a
+// WASM module built with SOURCE_DATE_EPOCH support (ABI 2); New rejects an older
+// module, so the option cannot silently no-op.
+func WithBuildDate(t time.Time) CompileOption {
+	return func(c *compileConfig) {
+		c.buildDate = t
+		c.buildDateSet = true
 	}
 }

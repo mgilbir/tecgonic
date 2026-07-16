@@ -11,7 +11,13 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 )
+
+// testBuildDate pins the compilation date so tests that compare PDF bytes across
+// separate compiles are deterministic: without WithBuildDate each compile stamps
+// the current host time, so two runs straddling a second boundary would differ.
+var testBuildDate = time.Date(2024, time.January, 15, 12, 0, 0, 0, time.UTC)
 
 func bundleDir(tb testing.TB) string {
 	tb.Helper()
@@ -428,6 +434,51 @@ Content.
 	}
 }
 
+// TestCompileBuildDate covers WithBuildDate: a pinned date makes output
+// reproducible (the engine has no real clock), and different dates yield
+// different output, proving the date actually reaches the engine (issue #37,
+// where \today rendered 1970 because the module never received a date).
+func TestCompileBuildDate(t *testing.T) {
+	dir := bundleDir(t)
+	ctx := context.Background()
+
+	c, err := New(ctx, WithDefaultBundleDir(dir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+
+	tex := []byte(`\documentclass{article}
+\begin{document}
+Compiled \today.
+\end{document}
+`)
+	d1 := time.Date(2021, time.March, 4, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2022, time.November, 9, 0, 0, 0, 0, time.UTC)
+
+	// Same pinned date across two compiles → byte-identical PDF.
+	a, err := c.CompileSource(ctx, tex, WithBuildDate(d1))
+	if err != nil {
+		t.Fatalf("compile a: %v", err)
+	}
+	b, err := c.CompileSource(ctx, tex, WithBuildDate(d1))
+	if err != nil {
+		t.Fatalf("compile b: %v", err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Error("same WithBuildDate produced different PDFs; output is not reproducible")
+	}
+
+	// A different date must change the output, or the date never reached the engine.
+	other, err := c.CompileSource(ctx, tex, WithBuildDate(d2))
+	if err != nil {
+		t.Fatalf("compile other: %v", err)
+	}
+	if bytes.Equal(a, other) {
+		t.Error("different WithBuildDate produced identical PDFs; the build date is not applied")
+	}
+}
+
 func TestCompileStateDir(t *testing.T) {
 	dir := bundleDir(t)
 	ctx := context.Background()
@@ -450,7 +501,7 @@ Content.
 	stateDir := t.TempDir()
 
 	var stderr1 bytes.Buffer
-	pdf1, err := c.CompileSource(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr1))
+	pdf1, err := c.CompileSource(ctx, tex, WithStateDir(stateDir), WithBuildDate(testBuildDate), WithStderr(&stderr1))
 	if err != nil {
 		t.Fatalf("Compile (cold): %v\nstderr: %s", err, stderr1.String())
 	}
@@ -462,7 +513,7 @@ Content.
 	}
 
 	var stderr2 bytes.Buffer
-	pdf2, err := c.CompileSource(ctx, tex, WithStateDir(stateDir), WithStderr(&stderr2))
+	pdf2, err := c.CompileSource(ctx, tex, WithStateDir(stateDir), WithBuildDate(testBuildDate), WithStderr(&stderr2))
 	if err != nil {
 		t.Fatalf("Compile (warm): %v\nstderr: %s", err, stderr2.String())
 	}
@@ -504,19 +555,20 @@ Content.
 	stateDir := t.TempDir()
 
 	// Populate the state dir with v1's feedback data.
-	if _, err := c.CompileSource(ctx, v1, WithStateDir(stateDir)); err != nil {
+	if _, err := c.CompileSource(ctx, v1, WithStateDir(stateDir), WithBuildDate(testBuildDate)); err != nil {
 		t.Fatalf("Compile (v1): %v", err)
 	}
 
-	// Ground truth: v2 compiled cold, no state involved.
-	want, err := c.CompileSource(ctx, v2)
+	// Ground truth: v2 compiled cold, no state involved. Pin the date so the
+	// byte comparison below reflects convergence, not the wall clock.
+	want, err := c.CompileSource(ctx, v2, WithBuildDate(testBuildDate))
 	if err != nil {
 		t.Fatalf("Compile (v2 cold): %v", err)
 	}
 
 	// v2 compiled against v1's stale state must produce identical output.
 	var stderr bytes.Buffer
-	got, err := c.CompileSource(ctx, v2, WithStateDir(stateDir), WithStderr(&stderr))
+	got, err := c.CompileSource(ctx, v2, WithStateDir(stateDir), WithBuildDate(testBuildDate), WithStderr(&stderr))
 	if err != nil {
 		t.Fatalf("Compile (v2 stale seed): %v\nstderr: %s", err, stderr.String())
 	}
@@ -769,7 +821,7 @@ See section \ref{sec:later} for details.
 	stateDir := t.TempDir()
 
 	var stderr1 bytes.Buffer
-	pdf1, err := c.Compile(ctx, fsys, "src/paper.tex", WithStateDir(stateDir), WithStderr(&stderr1))
+	pdf1, err := c.Compile(ctx, fsys, "src/paper.tex", WithStateDir(stateDir), WithBuildDate(testBuildDate), WithStderr(&stderr1))
 	if err != nil {
 		t.Fatalf("Compile (cold): %v\nstderr: %s", err, stderr1.String())
 	}
@@ -782,7 +834,7 @@ See section \ref{sec:later} for details.
 	}
 
 	var stderr2 bytes.Buffer
-	pdf2, err := c.Compile(ctx, fsys, "src/paper.tex", WithStateDir(stateDir), WithStderr(&stderr2))
+	pdf2, err := c.Compile(ctx, fsys, "src/paper.tex", WithStateDir(stateDir), WithBuildDate(testBuildDate), WithStderr(&stderr2))
 	if err != nil {
 		t.Fatalf("Compile (warm): %v\nstderr: %s", err, stderr2.String())
 	}

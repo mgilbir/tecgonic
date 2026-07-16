@@ -174,7 +174,24 @@ with no `latex.fmt`, a missing fonts directory — fail with a plain error (not 
 | `main source … must use the .tex extension or none` | Rename the main source to `.tex` (or drop the extension) |
 | `bundle stream truncated` from `PrepareBundle` | The download was cut short (a partial/cached object); it retries on the next call |
 | Compile ignores a context deadline | `WithContextCancellation` is off by default — enable it (see below) |
+| `\today` renders `1970-01-01` | A pre-ABI-2 WASM module — `New` rejects it; rebuild with `make wasm` (the current module reports ABI 2) |
+| PDFs differ byte-for-byte between runs | Expected: the date defaults to "now". Pass `WithBuildDate(fixed)` for reproducible output |
 | Benchmarks skip with "set `TECGONIC_BUNDLE_DIR`" | The heavy benchmarks need a full bundle; the minibundle lacks their packages |
+
+### Document date
+
+`\today`, `\year`/`\month`/`\day`, and the PDF timestamp default to the host date
+at the moment of the call. Pass `WithBuildDate(t)` to set a specific date — pin a
+fixed value for reproducible, byte-identical output:
+
+```go
+pdf, err := compiler.CompileSource(ctx, tex,
+	tecgonic.WithBuildDate(time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)))
+```
+
+The date is passed to the sandboxed engine as a single fixed value, so it exposes
+no wall-clock to the document (no timing side-channel) — see
+[docs/untrusted-input.md](docs/untrusted-input.md).
 
 ## WASM compilation cache
 
