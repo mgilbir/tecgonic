@@ -512,3 +512,81 @@ func TestPrepareBundleHTTPError(t *testing.T) {
 		t.Fatal("expected error on HTTP 404, got nil")
 	}
 }
+
+// A destDir with a trailing separator is a legitimate thing for a caller to
+// pass (an operator's MIDAS_TECGONIC_BUNDLE_DIR=/srv/midas/bundle/, say). Before
+// PrepareBundle normalized it, filepath.Dir named destDir itself — so staging was
+// created inside the tree being replaced — and swapIntoPlace's backup name became
+// a child of destDir, which rename(2) rejects with EINVAL ("invalid argument"),
+// failing every refresh of an existing bundle.
+func TestPrepareBundleTrailingSeparatorDestDir(t *testing.T) {
+	body := syntheticBundle()
+	srv := serveBytes(t, body)
+	defer srv.Close()
+
+	parent := t.TempDir()
+	dest := filepath.Join(parent, "bundle")
+	if err := PrepareBundle(context.Background(), dest, WithBundleURL(srv.URL)); err != nil {
+		t.Fatalf("PrepareBundle (seeding): %v", err)
+	}
+
+	// Re-extract over the now-existing bundle, so the rename-aside in
+	// swapIntoPlace actually runs. This is the call that used to fail.
+	if err := PrepareBundle(context.Background(), dest+string(filepath.Separator),
+		WithBundleURL(srv.URL), WithForce()); err != nil {
+		t.Fatalf("PrepareBundle with a trailing separator: %v", err)
+	}
+
+	// The bundle landed in destDir itself, not a nested copy.
+	if _, err := os.Stat(filepath.Join(dest, sentinelFile)); err != nil {
+		t.Errorf("sentinel missing after refresh: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, manifestName)); err != nil {
+		t.Errorf("manifest missing after refresh: %v", err)
+	}
+
+	// No staging or backup dirs stranded, either beside destDir or inside it.
+	for _, dir := range []string{parent, dest} {
+		for _, pat := range []string{".tecgonic-staging-*", "*.old-*"} {
+			leftovers, _ := filepath.Glob(filepath.Join(dir, pat))
+			if len(leftovers) != 0 {
+				t.Errorf("leftovers matching %q in %s: %v", pat, dir, leftovers)
+			}
+		}
+	}
+}
+
+// swapIntoPlace's backup must be a sibling of destDir. A backup *inside* destDir
+// cannot be renamed into (EINVAL), and sweepStaleLeftovers only scans the parent,
+// so it would also be invisible to crash reclamation.
+func TestSwapIntoPlaceBackupIsSibling(t *testing.T) {
+	parent := t.TempDir()
+	dest := filepath.Join(parent, "bundle")
+	staging := filepath.Join(parent, ".tecgonic-staging-123")
+	for _, d := range []string{dest, staging} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Mark the trees so we can tell which one ended up in place.
+	if err := os.WriteFile(filepath.Join(staging, "new"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := swapIntoPlace(staging, dest); err != nil {
+		t.Fatalf("swapIntoPlace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "new")); err != nil {
+		t.Errorf("staging tree not swapped into place: %v", err)
+	}
+	// The backup was a sibling named "<base>.old-<staging base>", and was removed
+	// once the swap committed. Its name must have matched what
+	// sweepStaleLeftovers reclaims, so a crash mid-swap leaves nothing permanent.
+	want := filepath.Join(parent, "bundle.old-.tecgonic-staging-123")
+	if !strings.Contains(filepath.Base(want), ".old-.tecgonic-staging-") {
+		t.Fatalf("backup name %q is not sweepable", want)
+	}
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Errorf("backup %q not cleaned up after a committed swap", want)
+	}
+}

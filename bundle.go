@@ -246,6 +246,13 @@ func PrepareBundle(ctx context.Context, destDir string, opts ...PrepareBundleOpt
 		o(&cfg)
 	}
 
+	// Normalize once, here, so nothing downstream has to cope with an
+	// unnormalized path. A caller passing "/srv/bundle/" is legitimate, but a
+	// trailing separator makes filepath.Dir name destDir itself (staging would be
+	// created *inside* the tree being replaced) and turns swapIntoPlace's backup
+	// name into a child of destDir, which rename(2) rejects with EINVAL.
+	destDir = filepath.Clean(destDir)
+
 	// Reject a malformed pin up front, before the ~800 MB download and 134k-file
 	// extraction it would otherwise fail after (audit C13).
 	if cfg.expectSHA256 != "" {
@@ -561,10 +568,16 @@ func sweepStaleLeftovers(parent string) {
 // bundle, then the new one — never a half-written mixture, but the "no bundle"
 // state means a Compile racing a WithForce refresh can fail. Don't compile
 // against a bundle directory while forcing a refresh of it.
+//
+// destDir must already be filepath.Clean'd (PrepareBundle does this): the backup
+// name is derived from its last element, which a trailing separator would eat.
 func swapIntoPlace(staging, destDir string) error {
 	backup := ""
 	if _, err := os.Stat(destDir); err == nil {
-		backup = destDir + ".old-" + filepath.Base(staging)
+		// A sibling of destDir, not a child: filepath.Join cannot express
+		// "same parent, suffixed last element", so the suffix is concatenated
+		// onto filepath.Base — a single path element that carries no separator.
+		backup = filepath.Join(filepath.Dir(destDir), filepath.Base(destDir)+".old-"+filepath.Base(staging))
 		if err := os.Rename(destDir, backup); err != nil {
 			return fmt.Errorf("tecgonic: moving old bundle aside: %w", err)
 		}
